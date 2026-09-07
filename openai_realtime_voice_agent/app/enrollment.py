@@ -352,6 +352,16 @@ class EnrollmentConductor:
     async def _say(self, text, device_id=None):
         target = self.device_id if device_id is None else device_id
         pcm = await self._tts(text)
+        # Tell the firmware this audio is an out-of-band announcement, not a
+        # (possibly cancelled) OpenAI reply. After a "stop"/button interrupt the
+        # device drops all incoming binary audio until the user next speaks;
+        # this control frame lifts that gate so announcements and timer
+        # expiries aren't silently swallowed. Older firmware ignores unknown
+        # text frames, so this is backward compatible.
+        try:
+            await self.send_json({"type": "announce"}, target)
+        except Exception:
+            pass
         for i in range(0, len(pcm), self.CHUNK):
             if not await self.send_bytes(pcm[i:i + self.CHUNK], target):
                 return False
