@@ -2,7 +2,7 @@
 
 Lets the Realtime assistant look things up online (weather, news, facts, opening
 hours, prices, recent events). The Realtime API has NO native web search, and
-pipecat 0.0.97 only supports custom *function* tools — so this is wired exactly
+pipecat only supports custom *function* tools — so this is wired exactly
 like the disconnect tool: a `web_search` function tool whose handler runs a
 SECOND, server-side OpenAI call (the Responses API `web_search` built-in tool),
 then returns a short, spoken-friendly answer the Realtime model reads aloud.

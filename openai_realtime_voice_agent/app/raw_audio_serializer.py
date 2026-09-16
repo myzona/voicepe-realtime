@@ -4,7 +4,7 @@ import logging
 import os
 import time
 from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame, Frame
-from pipecat.serializers.base_serializer import FrameSerializer, FrameSerializerType
+from pipecat.serializers.base_serializer import FrameSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -15,13 +15,20 @@ class RawAudioSerializer(FrameSerializer):
     Text frames (JSON control messages such as the va_client phase protocol)
     are NOT handled here — they are sent/received directly on the websocket by
     the WebSocketHandler so they go out as TEXT frames, not binary.
+
+    pipecat 1.x: FrameSerializer no longer has a `type` (BINARY/TEXT) — the
+    websocket transport dispatches on the payload type of each message in
+    both directions, which is exactly what this serializer always wanted.
     """
 
     def __init__(self, device_id: str, input_sample_rate: int | None = None):
+        # pipecat 1.x FrameSerializer is a BaseObject with InputParams; the
+        # base __init__ must run or should_ignore_frame()/setup() break.
+        super().__init__()
         self._device_id = device_id
         # The Home Assistant Voice PE firmware (va_client) streams 16 kHz PCM16
         # mono from the XMOS mic. We tag incoming frames with the device's true
-        # rate. NOTE: pipecat 0.0.97's input transport does NOT resample — the
+        # rate. NOTE: pipecat's input transport does NOT resample — the
         # InputResampler processor in websocket_handler.py upsamples 16k->24k
         # before the audio reaches OpenAI (which requires 24 kHz pcm16 input).
         if input_sample_rate is None:
@@ -123,11 +130,6 @@ class RawAudioSerializer(FrameSerializer):
         """Sync no-arg callback marking this device as the one in use."""
         self._on_activity = handler
 
-    @property
-    def type(self) -> FrameSerializerType:
-        """Get the serialization type - binary for raw audio."""
-        return FrameSerializerType.BINARY
-
     async def deserialize(self, message: bytes) -> InputAudioRawFrame:
         """Deserialize binary message as raw PCM audio frame.
 
@@ -137,7 +139,7 @@ class RawAudioSerializer(FrameSerializer):
         Returns:
             InputAudioRawFrame with the audio data, or None if invalid
         """
-        # Device CONTROL frames arrive as TEXT (str). pipecat 0.0.97's websocket
+        # Device CONTROL frames arrive as TEXT (str). pipecat's websocket
         # transport has NO on_message event and routes EVERY incoming frame
         # through this serializer, so the device's {"type":"interrupt"} (sent
         # when the user says the "stop" wake word) would be silently dropped and
@@ -315,18 +317,20 @@ class RawAudioSerializer(FrameSerializer):
 
         return frame
     
-    async def serialize(self, frame: Frame) -> bytes:
-        if isinstance(frame, OutputAudioRawFrame):
-            self._reply_audio_since_wake = True
+    async def serialize(self, frame: Frame) -> bytes | None:
         """Serialize frame to binary message.
-        
+
         For output audio frames, we just return the raw audio bytes.
-        Other frames are not serialized (return empty bytes).
+        Other frames are not serialized (return None). pipecat 1.x treats a
+        None/empty payload as "taken, nothing to send" — the transport does
+        not write anything to the socket for it (0.0.97 behaved the same for
+        the empty bytes this used to return).
         """
         if isinstance(frame, OutputAudioRawFrame):
+            self._reply_audio_since_wake = True
             audio_bytes = frame.audio
             logger.debug(f"📤 Serializing OutputAudioRawFrame: {len(audio_bytes)} bytes")
             return audio_bytes
-        # For other frame types, return empty bytes (not serialized)
-        logger.debug(f"📤 Serializing non-audio frame: {type(frame).__name__}, returning empty bytes")
-        return b""
+        # For other frame types, nothing goes to the device.
+        logger.debug(f"📤 Serializing non-audio frame: {type(frame).__name__}, nothing to send")
+        return None

@@ -1,4 +1,10 @@
-"""Prove MixedFastAPIWebsocketClient carries binary AND text, unlike the base."""
+"""Prove MixedFastAPIWebsocketClient carries binary AND text, and serializes sends.
+
+Up to pipecat 0.0.97 the stock FastAPIWebsocketClient was single-mode (its
+`is_binary` flag dropped every text control frame); pipecat 1.x's stock client
+carries both, so the mixed client's remaining value is the send lock plus the
+starlette post-disconnect RuntimeError handling. Both clients are exercised.
+"""
 import asyncio
 from pathlib import Path
 import sys
@@ -83,23 +89,42 @@ async def main():
     ], ws.sent
     print(f"mixed  -> send dispatched correctly: {[k for k, _ in ws.sent]}")
 
-    # --- the stock client, for contrast ----------------------------------
+    # --- the stock pipecat 1.x client, for contrast -----------------------
     ws2 = FakeWebSocket(INBOUND)
-    base = FastAPIWebsocketClient(ws2, True, callbacks)  # is_binary=True, as a BINARY serializer forces
+    base = FastAPIWebsocketClient(ws2, callbacks)
     base_got = await drain(base)
     print(
         f"stock  -> {len(base_got)} frames: "
         f"{len([m for m in base_got if isinstance(m, str)])} text, "
         f"{len([m for m in base_got if isinstance(m, (bytes, bytearray))])} binary"
     )
-    assert all(isinstance(m, (bytes, bytearray)) for m in base_got)
-    assert len(base_got) == 2, base_got
-    print("stock  -> DROPS all 3 control frames (start/wake/interrupt), as predicted")
+    # pipecat 1.x carries both payload types itself (0.0.97 dropped the text).
+    assert base_got == got, (base_got, got)
+    print("stock  -> pipecat 1.x stock client carries both types too (parity)")
 
     # disconnect must terminate iteration, not hang
     ws3 = FakeWebSocket([])
     assert await drain(MixedFastAPIWebsocketClient(ws3, callbacks)) == []
     print("mixed  -> clean stop on disconnect")
+
+    # starlette raises RuntimeError once receive() is called on a dead socket;
+    # the mixed client treats it as end-of-stream (the stock iterator would
+    # propagate it into the input transport's error path).
+    class DeadWebSocket(FakeWebSocket):
+        async def receive(self):
+            raise RuntimeError('Cannot call "receive" once a disconnect message has been received.')
+
+    assert await drain(MixedFastAPIWebsocketClient(DeadWebSocket([]), callbacks)) == []
+    print("mixed  -> post-disconnect RuntimeError is a clean end-of-stream")
+
+    # Concurrent sends are serialized by the lock (audio + control frames from
+    # different tasks must never interleave on the wire).
+    ws4 = FakeWebSocket([])
+    locked = MixedFastAPIWebsocketClient(ws4, callbacks)
+    await asyncio.gather(*(locked.send(b"\x00" * 10) for _ in range(5)),
+                         *(locked.send('{"type":"phase","value":"idle"}') for _ in range(5)))
+    assert len(ws4.sent) == 10
+    print("mixed  -> 10 concurrent sends all delivered under the send lock")
 
     print("\nALL ASSERTIONS PASSED")
 

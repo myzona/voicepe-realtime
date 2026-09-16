@@ -6,7 +6,7 @@ from typing import Dict, Any, Callable, Awaitable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pipecat.services.llm_service import FunctionCallParams
-    from pipecat.transports.websocket.server import WebsocketServerTransport
+    from pipecat.transports.base_transport import BaseTransport
 
 logger = logging.getLogger(__name__)
 
@@ -74,14 +74,17 @@ async def execute_disconnect_tool(
 
 
 def create_disconnect_callback(
-    transport: Optional["WebsocketServerTransport"],
+    transport: Optional["BaseTransport"],
     reason: str = "user_requested"
 ) -> Callable[[], Awaitable[None]]:
     """
     Create a disconnect callback that closes the WebSocket connection.
     
     Args:
-        transport: The WebSocket transport instance
+        transport: The WebSocket transport instance (the add-on's per-device
+            MixedFastAPIWebsocketTransport; pipecat 1.x renamed the old
+            single-client WebsocketServerTransport this used to type-check
+            against, and the add-on stopped using it in 0.16.8 anyway).
         reason: The reason for disconnecting
         
     Returns:
@@ -95,9 +98,9 @@ def create_disconnect_callback(
                 logger.warning("⚠️ No transport available for disconnect")
                 return
             
-            from pipecat.transports.websocket.server import WebsocketServerTransport
-            if not isinstance(transport, WebsocketServerTransport):
-                logger.warning("⚠️ Transport is not a WebsocketServerTransport")
+            from pipecat.transports.base_transport import BaseTransport
+            if not isinstance(transport, BaseTransport):
+                logger.warning("⚠️ Transport is not a pipecat BaseTransport")
                 return
             
             # WebSocket transport - try to disconnect the client
@@ -108,6 +111,23 @@ def create_disconnect_callback(
             if hasattr(transport, 'disconnect_client'):
                 await transport.disconnect_client()
                 logger.info("✅ Closed WebSocket connection via disconnect_client")
+                return
+
+            # Try method 1b: the per-device FastAPI transport exposes its client
+            # (MixedFastAPIWebsocketTransport.client) which owns the socket.
+            client = getattr(transport, 'client', None)
+            if client is not None and hasattr(client, 'disconnect'):
+                try:
+                    await client.send(json.dumps({
+                        "type": "disconnect",
+                        "message": "User requested disconnect",
+                        "reason": reason
+                    }))
+                    await asyncio.sleep(0.1)  # Give client time to process
+                except Exception as e:
+                    logger.debug(f"Could not send disconnect message: {e}")
+                await client.disconnect()
+                logger.info("✅ Closed WebSocket connection via transport client")
                 return
             
             # Try method 2: access websocket from transport
@@ -157,7 +177,7 @@ def create_disconnect_callback(
 
 
 def create_disconnect_tool_handler(
-    transport: Optional["WebsocketServerTransport"]
+    transport: Optional["BaseTransport"]
 ) -> Callable[["FunctionCallParams"], Awaitable[None]]:
     """
     Create a disconnect tool handler for Pipecat's OpenAI Realtime Service.

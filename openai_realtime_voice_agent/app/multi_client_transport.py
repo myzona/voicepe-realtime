@@ -22,19 +22,27 @@ class MixedFastAPIWebsocketClient(FastAPIWebsocketClient):
     `receive()` yields whichever payload each frame actually carried, and
     `send()` dispatches on the Python type of the outgoing data rather than on
     a mode fixed at construction time.
+
+    pipecat 1.x's stock client already carries both payload types (the
+    `is_binary` mode is gone). This subclass is kept for two things the stock
+    one still lacks: a send lock (audio and JSON control frames are written
+    from different tasks) and a receive loop that treats starlette's
+    post-disconnect RuntimeError as a clean end-of-stream.
     """
 
-    def __init__(self, websocket: WebSocket, callbacks):
+    def __init__(self, websocket: WebSocket, callbacks, ws_close_timeout: float | None = None):
         """Initialize the client.
 
         Args:
             websocket: The FastAPI/starlette WebSocket connection.
             callbacks: The transport's FastAPIWebsocketCallbacks.
+            ws_close_timeout: How long disconnect() waits for the close
+                handshake; None keeps pipecat's default.
         """
-        # `is_binary` is inherited but never consulted — both receive() and
-        # send() are overridden to decide per message. It is set to True only
-        # so any base-class code that reads it assumes the audio path.
-        super().__init__(websocket, True, callbacks)
+        if ws_close_timeout is None:
+            super().__init__(websocket, callbacks)
+        else:
+            super().__init__(websocket, callbacks, ws_close_timeout=ws_close_timeout)
         # The pipeline's output transport writes audio bytes while the phase
         # emitter writes JSON text, from different tasks, to the same socket.
         # starlette does not serialize concurrent sends, so interleaved frames
@@ -132,11 +140,13 @@ class MixedFastAPIWebsocketTransport(FastAPIWebsocketTransport):
         """
         super().__init__(websocket, params, input_name=input_name, output_name=output_name)
 
-        # The base constructor already built a single-mode client and handed it
-        # to the input/output processors, so both have to be rebuilt around the
+        # The base constructor already built a stock client and handed it to
+        # the input/output processors, so both have to be rebuilt around the
         # mixed client. The discarded objects hold no resources — their
         # constructors only assign fields — so this costs nothing at runtime.
-        self._client = MixedFastAPIWebsocketClient(websocket, self._callbacks)
+        self._client = MixedFastAPIWebsocketClient(
+            websocket, self._callbacks, ws_close_timeout=params.ws_close_timeout
+        )
         self._input = MixedFastAPIWebsocketInputTransport(
             self, self._client, self._params, name=self._input_name
         )
