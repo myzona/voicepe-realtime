@@ -3,12 +3,130 @@ import logging
 import time
 from typing import Optional, Dict
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMAssistantAggregator,
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.frames.frames import Frame, StartFrame, LLMMessagesUpdateFrame
+from pipecat.frames.frames import (
+    Frame,
+    StartFrame,
+    LLMMessagesUpdateFrame,
+    UserStartedSpeakingFrame,
+)
+from pipecat.turns.user_start.external_user_turn_start_strategy import (
+    ExternalUserTurnStartStrategy,
+)
+from pipecat.turns.user_stop.external_user_turn_stop_strategy import (
+    ExternalUserTurnStopStrategy,
+)
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 logger = logging.getLogger(__name__)
+
+
+def _inert_external_turn_strategies() -> UserTurnStrategies:
+    """ExternalUserTurnStrategies(), pre-shaped the way realtime mode wants it.
+
+    Equivalent to `ExternalUserTurnStrategies()` except the stop strategy is
+    created with `wait_for_transcript=False` up front — the exact mutation the
+    aggregator applies itself in realtime mode, which it otherwise logs as a
+    WARNING on every connection because the strategies are "user-provided".
+    """
+    return UserTurnStrategies(
+        start=[ExternalUserTurnStartStrategy(enable_interruptions=True)],
+        stop=[ExternalUserTurnStopStrategy(wait_for_transcript=False)],
+    )
+
+
+class RealtimeAssistantAggregator(LLMAssistantAggregator):
+    """Assistant aggregator that forwards tool results to OpenAI immediately.
+
+    pipecat 0.0.97 pushed the context frame carrying a finished tool result
+    upstream unconditionally; the realtime service then sent the
+    function_call_output and created the follow-up response right away.
+    pipecat 1.x gates that push: it is DROPPED while the user is speaking
+    (`_user_speaking`, no re-trigger) and DEFERRED until BotStoppedSpeaking
+    while the bot is speaking. Neither suits this add-on:
+
+      * semantic_vad fires speech_started per utterance fragment, so a user
+        merely continuing their sentence while an HA tool call is in flight
+        would leave that tool's result unsent — the model never learns the
+        light did turn on (the same race cancel_on_interruption=False guards
+        against in main.py).
+      * OpenAI marks a response done once its function_call item is done,
+        even if the device is still playing that response's audio; the
+        follow-up response.create is valid at that point and its audio simply
+        queues behind. Waiting for the device to drain only adds latency.
+
+    So both gates are removed here: tool results push as soon as they land
+    (results still queued behind this one are bundled, as pipecat does).
+    """
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, UserStartedSpeakingFrame):
+            # The base class only uses this flag to gate tool-result pushes.
+            self._user_speaking = False
+
+    async def _maybe_push_context_after_function_result(self) -> None:  # type: ignore[override]
+        from pipecat.frames.frames import FunctionCallResultFrame
+
+        if self.has_queued_frame(FunctionCallResultFrame):
+            logger.debug(f"{self}: more tool results queued — bundling into one push")
+            return
+        await self.push_context_frame(FrameDirection.UPSTREAM)
+
+
+class RealtimeContextAggregatorPair(LLMContextAggregatorPair):
+    """LLMContextAggregatorPair whose assistant half is RealtimeAssistantAggregator."""
+
+    def __init__(self, context: LLMContext, **kwargs):
+        super().__init__(context, **kwargs)
+        # Same wiring as the base pair, just a different assistant class. The
+        # discarded stock instance only assigned fields.
+        self._assistant = RealtimeAssistantAggregator(
+            context,
+            params=self._assistant._params,
+            _realtime_service_mode=kwargs.get("realtime_service_mode"),
+            _paired_user_aggregator=self._user,
+        )
+
+
+def make_context_aggregator_pair(context: LLMContext) -> LLMContextAggregatorPair:
+    """Build the context aggregator pair the realtime pipeline uses.
+
+    pipecat 1.x moved user-turn detection out of the transport and into the
+    user aggregator. Its default `UserTurnStrategies()` runs a local VAD /
+    transcription start strategy plus the Smart-Turn v3 ONNX end-of-turn
+    analyzer — none of which apply here: OpenAI's server-side VAD decides
+    the turns and SafeRealtimeLLMService emits the UserStarted/Stopped
+    frames itself, exactly as pipecat 0.0.97 did (see main.py). Passing
+    external (inert) turn strategies explicitly
+
+      * skips the eager Smart-Turn model load per connection (~0.7 s), and
+      * stops a TranscriptionFrame from opening a phantom user turn (which
+        would broadcast a spurious interruption + UserStartedSpeakingFrame).
+
+    It never receives a proposal to resolve, so it is inert; the aggregators
+    keep their realtime-mode role of writing the user transcript (when
+    transcription is enabled) and the assistant text into the LLMContext that
+    SessionManager caches across reconnects.
+
+    `realtime_service_mode=True` is what the pair auto-detects from the
+    realtime service anyway; set explicitly so the behaviour does not depend
+    on the metadata broadcast timing. The assistant half is the
+    RealtimeAssistantAggregator above (immediate tool-result forwarding).
+    """
+    return RealtimeContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            user_turn_strategies=_inert_external_turn_strategies(),
+        ),
+        realtime_service_mode=True,
+    )
 
 
 class ContextCacheEntry:
@@ -34,7 +152,7 @@ class SessionManager:
             reuse_timeout: Time in seconds after which cached context expires
             max_restored_messages: Cap on how many of the most-recent cached
                 messages are restored into a new session (0 = unlimited). The
-                OpenAI Realtime conversation grows server-side and pipecat 0.0.97
+                OpenAI Realtime conversation grows server-side and pipecat
                 has no truncation, so every response.create re-bills the whole
                 history (audio transcripts + tool results). The device reconnects
                 often (follow-up windows, keepalive drops), and each reconnect
@@ -232,7 +350,7 @@ class SessionManager:
             LLMContextAggregatorPair with cached or new context
         """
         context = self.create_context_for_new_session(client_id)
-        aggregator_pair = LLMContextAggregatorPair(context)
+        aggregator_pair = make_context_aggregator_pair(context)
         self.set_context_aggregator(client_id, aggregator_pair)
         return aggregator_pair
     

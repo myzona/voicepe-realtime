@@ -7,8 +7,8 @@ import uuid
 from typing import Any, Optional, Callable, Awaitable, Dict
 
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineTask
+from pipecat.pipeline.worker import PipelineWorker
+from pipecat.workers.runner import WorkerRunner
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 
@@ -29,7 +29,7 @@ from app.transcript_logger import TranscriptLogger
 logger = logging.getLogger(__name__)
 
 # The OpenAI Realtime API works in 24 kHz PCM16. The Voice PE firmware plays
-# 24 kHz back and streams 16 kHz up. IMPORTANT: pipecat 0.0.97's websocket INPUT
+# 24 kHz back and streams 16 kHz up. IMPORTANT: pipecat's websocket INPUT
 # transport does NOT resample (only the OUTPUT transport does), and OpenAI
 # Realtime's pcm16 input rate is hard-locked to 24000 (PCMAudioFormat.rate =
 # Literal[24000]) — you cannot tell it the audio is 16 kHz. So the device's
@@ -69,7 +69,7 @@ class SessionActivityTracker(FrameProcessor):
 class InputResampler(FrameProcessor):
     """Upsample incoming device mic audio to the OpenAI Realtime input rate.
 
-    The Voice PE streams 16 kHz PCM16. pipecat 0.0.97's websocket input transport
+    The Voice PE streams 16 kHz PCM16. pipecat's websocket input transport
     forwards those frames unchanged, and OpenAI Realtime reads pcm16 input at a
     fixed 24 kHz — so without this the audio is interpreted ~1.5x too fast,
     badly degrading transcription (e.g. first word dropped, words mangled). This
@@ -117,7 +117,7 @@ class InputResampler(FrameProcessor):
 class ConnectionRecovery(FrameProcessor):
     """Auto-reconnect the OpenAI Realtime session when its WebSocket dies.
 
-    pipecat 0.0.97's OpenAIRealtimeLLMService has NO reconnect logic: when the
+    pipecat's OpenAIRealtimeLLMService has NO reconnect logic: when the
     OpenAI WS drops (1011 keepalive ping timeout, 1001 going away on the 60-min
     cap, 1006, or any send/receive failure) it treats the send error as fatal and
     floods ErrorFrame — ~15/s, one per forwarded mic frame — forever. The single
@@ -450,7 +450,7 @@ class WebSocketHandler:
         self,
         connection: DeviceConnection,
         activity_callback: Optional[Callable[[], None]] = None
-    ) -> tuple[Pipeline, PipelineRunner, PipelineTask]:
+    ) -> tuple[Pipeline, WorkerRunner, PipelineWorker]:
         """Build the pipeline from one connection's resources.
 
         Args:
@@ -459,7 +459,9 @@ class WebSocketHandler:
             activity_callback: Optional callback for session activity tracking
 
         Returns:
-            Tuple of (Pipeline, PipelineRunner, PipelineTask)
+            Tuple of (Pipeline, WorkerRunner, PipelineWorker). pipecat 1.x
+            names: PipelineWorker is what PipelineTask became (the old name is
+            a deprecated alias), WorkerRunner replaces PipelineRunner.
         """
         transport = connection.transport
         openai_service = connection.openai_service
@@ -589,15 +591,24 @@ class WebSocketHandler:
         if self.audio_recording_service:
             logger.info("🎙️ Audio recording enabled - will record input and output audio")
         
-        # Create pipeline runner and task
+        # Create pipeline runner and worker
         # Disable idle timeout - server should always stay ready for connections
         # handle_sigint=False is REQUIRED now that there is a runner per
-        # connection: PipelineRunner installs a process-wide SIGINT handler by
+        # connection: WorkerRunner installs a process-wide SIGINT handler by
         # default, so each new device would clobber the previous one's and a
         # disconnect would tear down shutdown handling for the whole add-on.
         # The process owns its own signal handling in main().
-        runner = PipelineRunner(handle_sigint=False)
-        task = PipelineTask(pipeline, idle_timeout_secs=None, cancel_on_idle_timeout=False)
+        runner = WorkerRunner(handle_sigint=False)
+        # enable_rtvi=False: pipecat 1.x otherwise PREPENDS an RTVIProcessor to
+        # the pipeline (and adds an RTVIObserver). The Voice PE speaks its own
+        # va_client JSON protocol, not RTVI, so keep the 0.0.97 topology exactly
+        # as listed above.
+        task = PipelineWorker(
+            pipeline,
+            idle_timeout_secs=None,
+            cancel_on_idle_timeout=False,
+            enable_rtvi=False,
+        )
 
         logger.info(f"✅ Pipeline built for {client_id}")
 
@@ -1087,7 +1098,10 @@ class WebSocketHandler:
                 await on_client_connected(device_id)
 
             # Blocks until the device disconnects (or the pipeline ends).
-            await runner.run(task)
+            # pipecat 1.x: workers are registered first, then run() blocks
+            # until every root worker has finished (auto_end=True default).
+            await runner.add_workers(task)
+            await runner.run()
         except asyncio.CancelledError:
             raise
         except Exception as e:

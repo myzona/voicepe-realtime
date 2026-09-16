@@ -5,9 +5,7 @@ import asyncio
 import logging
 from typing import Optional
 import dotenv
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineTask
+from pipecat.frames.frames import UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 from app.mcp_service import HomeAssistantMCPService
 from app.phase_emitter import TurnLiveness
@@ -100,10 +98,50 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
     async def _truncate_current_audio_response(self):  # type: ignore[override]
         return
 
+    # ---- user-turn frames: keep pipecat 0.0.97 semantics -------------------
+    #
+    # pipecat 1.x no longer emits UserStartedSpeakingFrame /
+    # UserStoppedSpeakingFrame (nor the interruption) from the realtime
+    # service on OpenAI's server-VAD events. It broadcasts
+    # ProposedUser{Started,Stopped}SpeakingFrame instead and expects the
+    # upstream LLMUserAggregator's ExternalUserTurnStrategies to resolve them
+    # through a UserTurnController — which (a) swallows a second speech_started
+    # while it still believes a turn is open (`if self._user_turn: return`) and
+    # (b) auto-stops a turn after `user_turn_stop_timeout` (5 s) with no
+    # transcription activity. Both bite this add-on: input_audio_buffer.clear
+    # (device stop / follow-up flush / connect) can end a server-VAD segment
+    # without a speech_stopped, and the device-side firmware lifts its
+    # post-stop mute ONLY on a `listening` phase (phase_emitter.py) — a
+    # swallowed UserStartedSpeakingFrame would leave the device muted; a
+    # timeout-forced UserStoppedSpeakingFrame would flip the device to
+    # `thinking` mid-question (>5 s utterances, transcription off by default).
+    #
+    # So the service does what 0.0.97 did: every speech_started → one
+    # interruption broadcast + one UserStartedSpeakingFrame downstream; every
+    # speech_stopped → one UserStoppedSpeakingFrame downstream. The aggregator
+    # pair is given ExternalUserTurnStrategies() (session_manager.py) so it
+    # never gets a proposal to act on and never invents turns of its own.
+    # broadcast_interruption() is what pipecat 0.0.97's
+    # push_interruption_task_frame_and_wait() delegates to since 0.0.104: an
+    # InterruptionFrame reaches every processor up- and downstream (output
+    # transport flushes queued audio, OutputLeadBuffer drops its held lead,
+    # aggregators reset), and function-call tasks stay alive because
+    # register_function() below pins cancel_on_interruption=False.
+
+    async def _handle_evt_speech_started(self, evt):  # type: ignore[override]
+        await self._truncate_current_audio_response()
+        await self.broadcast_interruption()
+        await self.push_frame(UserStartedSpeakingFrame())
+
+    async def _handle_evt_speech_stopped(self, evt):  # type: ignore[override]
+        await self.start_ttfb_metrics()
+        await self.start_processing_metrics()
+        await self.push_frame(UserStoppedSpeakingFrame())
+
     async def send_client_event(self, event):  # type: ignore[override]
         """Serialize GPT transcription models with their required `languages` field.
 
-        Pipecat 0.0.97 only exposes the legacy singular `language` field on
+        Pipecat only exposes the legacy singular `language` field on
         InputAudioTranscription. OpenAI rejects that field for newer GPT
         transcription models, which instead expect `languages: [<ISO code>]`.
         """
@@ -227,8 +265,9 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
             return True
         return False
 
-    def register_function(self, function_name, handler, start_callback=None, *,
-                          cancel_on_interruption: bool = True):  # type: ignore[override]
+    def register_function(self, function_name, handler, *,
+                          cancel_on_interruption=None, timeout_secs=None,
+                          cancellable_by_llm=None):  # type: ignore[override]
         """Force cancel_on_interruption=False for every tool registration.
 
         pipecat cancels in-flight function-call tasks on EVERY user-speech
@@ -249,6 +288,13 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
         for a dead turn. All our handlers use the single-param
         FunctionCallParams signature, so the wrapper does too (pipecat
         inspects the signature to pick the calling convention).
+
+        pipecat 1.x note: the wrapper is a plain closure, so it deliberately
+        does NOT carry pipecat's `_pipecat_cleanup` attribute that the
+        MCPClient tool wrapper has. That attribute makes the LLM service close
+        the MCP connection when THIS service is cleaned up — wrong here, the
+        MCP client is shared by every device's session (see mcp_service.py).
+        `timeout_secs` / `cancellable_by_llm` are passed through unchanged.
         """
         async def liveness_tracked(params):
             # Speaker gate (fork): tools listed in male_only_tools only execute
@@ -276,7 +322,11 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
                 self.turn_liveness.tool_finished()
 
         super().register_function(
-            function_name, liveness_tracked, start_callback, cancel_on_interruption=False
+            function_name,
+            liveness_tracked,
+            cancel_on_interruption=False,
+            timeout_secs=timeout_secs,
+            cancellable_by_llm=cancellable_by_llm,
         )
 
     async def _receive_task_handler(self):  # type: ignore[override]
@@ -361,7 +411,7 @@ class Application:
         interrupt_response = os.environ.get("INTERRUPT_RESPONSE", "false").strip().lower() == "true"
         # Who creates the OpenAI response each user turn (semantic_vad only).
         # TRUE (default) = the server creates a response on every detected
-        # end-of-turn. This is REQUIRED for multi-turn: Pipecat 0.0.97's realtime
+        # end-of-turn. This is REQUIRED for multi-turn: Pipecat's realtime
         # service only auto-creates a response for the FIRST context (turn 1) and
         # after tool results; plain 2nd/3rd user turns get NO response unless the
         # server makes it. FALSE reproduces the old single-turn-only behaviour
@@ -788,10 +838,10 @@ class Application:
 
             # Get MCP tool definitions if available
             mcp_tools_schema = None
-            if self.mcp_client:
+            if self.mcp_client and self.mcp_service:
                 try:
                     logger.info("🔧 Fetching MCP tool definitions...")
-                    mcp_tools_schema = await self.mcp_client.get_tools_schema()
+                    mcp_tools_schema = await self.mcp_service.fetch_tools_schema()
                     
                     # Convert MCP tool schemas to OpenAI format, applying the
                     # optional allow-list so the realtime session isn't flooded
@@ -829,7 +879,7 @@ class Application:
                     eagerness=self.vad_eagerness,
                     # create_response=True (default): the SERVER creates a
                     # response on every detected end-of-turn. This is required for
-                    # multi-turn conversation. Pipecat 0.0.97's
+                    # multi-turn conversation. Pipecat's
                     # OpenAIRealtimeLLMService._handle_context only auto-creates a
                     # response for the FIRST context (turn 1) and after tool
                     # results (its else-branch just updates the context); a plain
@@ -911,12 +961,18 @@ class Application:
 
             logger.info(f"🔧 Creating session with {len(all_tools)} tools: {[tool.get('name', 'unknown') for tool in all_tools]}")
             
-            # Create new service instance
+            # Create new service instance. pipecat 1.x takes model + session
+            # properties through a Settings object (the bare `model=` /
+            # `session_properties=` kwargs are deprecated shims). The model is
+            # a connection-level parameter (WebSocket URL query), so it MUST be
+            # set here: pipecat's own default moved to gpt-realtime-2.1.
             service = SafeRealtimeLLMService(
                 api_key=self.openai_api_key,
-                model=self.model,
-                session_properties=session_properties,
-                start_audio_paused=False
+                settings=SafeRealtimeLLMService.Settings(
+                    model=self.model,
+                    session_properties=session_properties,
+                ),
+                start_audio_paused=False,
             )
             service.speaker_probe = None
             service.male_only_tools = set()
@@ -966,14 +1022,14 @@ class Application:
             logger.info("✅ Registered timer + memory tools")
 
             # Register MCP tool handlers if available
-            if self.mcp_client and mcp_tools_schema:
+            if self.mcp_service and mcp_tools_schema:
                 try:
-                    await self.mcp_client.register_tools_schema(mcp_tools_schema, service)
-                    logger.info(f"✅ Registered {len(mcp_tools_schema.standard_tools)} MCP tool handlers")
+                    registered = self.mcp_service.register_handlers(mcp_tools_schema, service)
+                    logger.info(f"✅ Registered {registered} MCP tool handlers")
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to register MCP tool handlers: {e}")
-            # MUST come AFTER register_tools_schema: pipecat registers a handler
-            # for EVERY MCP tool (our allow-list/dedup only trims the definitions
+            # MUST come AFTER register_handlers: a handler is registered for
+            # EVERY MCP tool (our allow-list/dedup only trims the definitions
             # sent to the model, not handler registration), so a same-named
             # ask_openclaw script silently rebinds the tool back onto the HA MCP
             # path and its 60s cap. Observed live 2026-07-13: "It failed. I
@@ -994,7 +1050,7 @@ class Application:
     def _preseed_context(self, service) -> None:
         """Stop pipecat speaking spontaneously on a brand-new session.
 
-        pipecat 0.0.97's `_handle_context` does `if not self._context: ...
+        pipecat's `_handle_context` (0.0.97 and 1.10 alike) does `if not self._context: ...
         await self._create_response()` — the very first context it sees
         triggers a real, audible reply. With semantic_vad the SERVER also
         creates a response per user turn, so the first real turn would
@@ -1115,6 +1171,14 @@ class Application:
 
         if self.audio_recording_service:
             self.audio_recording_service.cleanup()
+
+        # pipecat 1.x MCPClient holds a persistent session; it is shared by all
+        # device pipelines, so it is closed once here, not per connection.
+        if self.mcp_service:
+            try:
+                await self.mcp_service.close()
+            except Exception as e:
+                logger.warning(f"⚠️ Error closing MCP client: {e}")
 
         logger.info("✅ Application cleanup complete")
 

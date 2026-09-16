@@ -6,18 +6,22 @@ be the OpenAI tool-call arguments. This processor surfaces the assistant's spoke
 text (and, when input transcription is enabled, the user's transcript) as plain
 INFO lines so the add-on log alone explains a turn.
 
-How the text reaches us (verified against pipecat 0.0.97's *real*
+How the text reaches us (verified against pipecat 1.10's *real*
 `pipecat.services.openai.realtime.llm.OpenAIRealtimeLLMService` — NOT the older
 `openai_realtime_beta` module, which pushes different frames):
 
   - Assistant reply, AUDIO modality (what we use): the service handles
     `response.output_audio_transcript.delta` and pushes a **`TTSTextFrame`** per
-    chunk (NOT `LLMTextFrame` — that's only for the text modality). The whole
-    response is bracketed by `LLMFullResponseStartFrame` /
-    `LLMFullResponseEndFrame`. We accumulate the chunks and log one line on the
-    End frame. (We also match `LLMTextFrame` so a text-modality run still logs.)
-    These flow DOWNSTREAM out of the service, so the "assistant" tap sits AFTER
-    it in the pipeline.
+    chunk. Since pipecat 1.x it ALSO pushes an `LLMTextFrame` with the same
+    text right before it (for RTVI's bot-llm-text event, flagged
+    `append_to_context=False`); 0.0.97 pushed only the TTSTextFrame. To keep
+    one line per reply we accumulate `TTSTextFrame`s only, and fall back to
+    `LLMTextFrame`s solely when no TTS text arrived in that response (the
+    text-modality case, where the service pushes LLMTextFrames alone). The
+    whole response is bracketed by `LLMFullResponseStartFrame` /
+    `LLMFullResponseEndFrame`; we log one line on the End frame. These flow
+    DOWNSTREAM out of the service, so the "assistant" tap sits AFTER it in
+    the pipeline.
 
   - User transcript: `conversation.item.input_audio_transcription.completed`
     pushes a `TranscriptionFrame` — but UPSTREAM (toward the input, so the user
@@ -58,6 +62,10 @@ class TranscriptLogger(FrameProcessor):
         super().__init__(**kwargs)
         self._capture = capture
         self._assistant_buf: list[str] = []
+        # LLMTextFrame chunks, used only if no TTSTextFrame arrives in the
+        # response (text modality). pipecat 1.x emits BOTH per audio transcript
+        # delta, so summing them would log every reply twice.
+        self._assistant_llm_buf: list[str] = []
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -66,12 +74,16 @@ class TranscriptLogger(FrameProcessor):
             # Accumulate the reply text chunks (audio modality -> TTSTextFrame;
             # text modality -> LLMTextFrame), then log once per response on the
             # End bracket so it's one readable line instead of one per chunk.
-            if isinstance(frame, (TTSTextFrame, LLMTextFrame)):
+            if isinstance(frame, TTSTextFrame):
                 if frame.text:
                     self._assistant_buf.append(frame.text)
+            elif isinstance(frame, LLMTextFrame):
+                if frame.text:
+                    self._assistant_llm_buf.append(frame.text)
             elif isinstance(frame, LLMFullResponseEndFrame):
-                text = "".join(self._assistant_buf).strip()
+                text = "".join(self._assistant_buf or self._assistant_llm_buf).strip()
                 self._assistant_buf = []
+                self._assistant_llm_buf = []
                 if text:
                     logger.info(f"🤖 assistant: {text}")
 

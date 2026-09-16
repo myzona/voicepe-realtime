@@ -63,7 +63,11 @@ async def build_server():
     # audio processing is skipped.
     def fake_build(connection, activity_callback=None):
         class Runner:
-            async def run(self, _task):
+            # pipecat 1.x WorkerRunner shape: add_workers() then run().
+            async def add_workers(self, *_workers):
+                return None
+
+            async def run(self):
                 async for message in connection.transport.client.receive():
                     await connection.serializer.deserialize(message)
 
