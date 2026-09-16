@@ -259,7 +259,7 @@ class SafeLiveLLMService(OpenAILiveLLMService):
         now = time.monotonic()
         if now < self._output_muted_until:
             return  # device "stop": the user does not want to hear this utterance
-        if is_silence(audio):
+        if len(audio) % 2 == 0 and is_silence(audio):
             if now - self._last_speech_mono > OUTPUT_SILENCE_HANGOVER_S:
                 # Continuous silence between utterances: never forward it, or the
                 # device stays in playback and never reaches idle.
@@ -312,6 +312,7 @@ class SafeLiveLLMService(OpenAILiveLLMService):
             self._user_turn.open
             or self._assistant_turn.open
             or self._open_function_calls
+            or self._pending_responses
             or time.monotonic() - self._last_speech_mono < 2.0
         )
 
@@ -373,6 +374,11 @@ class SafeLiveLLMService(OpenAILiveLLMService):
         finally:
             self._resetting_conversation = False
         self.session_expires_at = None
+        # pipecat marks the processor unusable on a permanent error (the
+        # connection-death ErrorFrames that triggered this reconnect). The
+        # worker's default CONTINUE policy keeps routing frames regardless,
+        # but the flag should reflect the fresh connection.
+        await self.set_usable(True)
 
     async def _receive_task_handler(self):  # type: ignore[override]
         """Surface reader death as an ErrorFrame ConnectionRecovery acts on.
