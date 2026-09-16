@@ -22,7 +22,12 @@ Pinned here:
   * pipeline topology (no RTVIProcessor) and an end-to-end run on a fake device:
     session.start is the first client event, mic PCM flows as
     session.input_audio.append once the session has started;
-  * selecting gpt-realtime-2 still yields the phase-1 session.update payload.
+  * selecting gpt-realtime-2 still yields the phase-1 session.update payload;
+  * phase 4: the backend gets the tool rules + reasoning effort, the live model
+    the delegation/no-filler rules, web_search is the Responses built-in tool
+    (with a one-shot fallback), the input clock feeds silence while the device
+    mic is gated, a user fragment during the reply does not flip the phase,
+    delegations without function calls are released, server events are logged.
 """
 import asyncio
 import base64
@@ -38,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipecat.frames.frames import (
     ErrorFrame,
+    InputAudioRawFrame,
     SpeechOutputAudioRawFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
@@ -50,10 +56,20 @@ from pipecat.services.openai.live import events as live_events
 from app.device_registry import DeviceConnection
 from app.live_service import (
     BACKEND_PREAMBLE,
+    BACKEND_TOOL_RULES,
+    HOSTED_WEB_SEARCH_TOOL,
+    INPUT_CLOCK_GAP_S,
+    INPUT_CLOCK_TAIL_S,
+    LIVE_DELEGATION_RULES,
     OUTPUT_SILENCE_HANGOVER_S,
+    USER_TURN_GAP_S,
     SafeLiveLLMService,
+    backend_instructions,
     is_live_model,
+    live_instructions,
     resolve_live_voice,
+    resolve_reasoning_effort,
+    resolve_text_verbosity,
 )
 from app.main import Application, SafeRealtimeLLMService
 from app.phase_emitter import TurnLiveness
@@ -68,11 +84,19 @@ EXPECTED_TOOL_NAMES = [
 ]
 
 
+# The backend's tool list when the built-in web_search replaces the function.
+EXPECTED_BACKEND_TOOL_NAMES = [n for n in EXPECTED_TOOL_NAMES if n != "web_search"]
+
+
 def configure_live(app: Application) -> None:
+    """Mirror Application.initialize() defaults for the gpt-live-1 path."""
     configure(app)
     app.model = "gpt-live-1"
     app.voice = "marin"
     app.live_backend_model = "gpt-5.4-mini"
+    app.live_backend_reasoning_effort = "low"
+    app.live_backend_verbosity = None
+    app.live_builtin_web_search = True
 
 
 class TestLivePipelineSmoke(unittest.IsolatedAsyncioTestCase):
@@ -122,8 +146,12 @@ class TestLivePipelineSmoke(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["type"], "session.start")
         session = payload["session"]
         self.assertEqual(session["model"], "gpt-live-1")
-        # Persona + memory notes only — pipecat's ASYNC TOOLS guidance stays out.
+        # Persona + memory notes + the delegation/no-filler rules — pipecat's
+        # ASYNC TOOLS guidance stays out.
         self.assertTrue(session["instructions"].startswith("You are the test assistant."))
+        self.assertTrue(session["instructions"].endswith(LIVE_DELEGATION_RULES))
+        self.assertIn("what time is it", session["instructions"])
+        self.assertIn("do not hum", session["instructions"])
         self.assertNotIn("ASYNC TOOLS", session["instructions"])
         self.assertEqual(session["audio"], {"output": {"voice": "marin"}})
         self.assertNotIn("input", session)  # empty history is omitted
@@ -131,18 +159,29 @@ class TestLivePipelineSmoke(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delegation["type"], "responses")
         responses = delegation["responses"]
         self.assertEqual(responses["model"], "gpt-5.4-mini")
+        # Backend prompt: preamble, explicit tool rules (time → time tool,
+        # never guess), then the persona.
         self.assertTrue(responses["instructions"].startswith(BACKEND_PREAMBLE))
+        self.assertIn("ALWAYS call the date/time tool first", responses["instructions"])
+        self.assertIn("never guess, estimate or compute the time", responses["instructions"])
         self.assertIn("You are the test assistant.", responses["instructions"])
         self.assertNotIn("tool_choice", responses)
+        # Latency knobs: reasoning effort low by default, verbosity not sent.
+        self.assertEqual(responses["reasoning"], {"effort": "low"})
+        self.assertNotIn("text", responses)
+        self.assertNotIn("max_output_tokens", responses)
         # The flat `delegation.model` form is rejected by the API; never send it.
         self.assertNotIn("model", delegation)
-        # Tools: same provider-native dicts as the Realtime path, unchanged.
-        names = [t["name"] for t in responses["tools"]]
-        self.assertEqual(names, EXPECTED_TOOL_NAMES)
-        for tool in responses["tools"]:
-            self.assertEqual(tool["type"], "function")
+        # Tools: same provider-native dicts as the Realtime path, except that
+        # web_search is the Responses built-in tool (runs in the backend).
+        functions = [t for t in responses["tools"] if t["type"] == "function"]
+        self.assertEqual([t["name"] for t in functions], EXPECTED_BACKEND_TOOL_NAMES)
+        for tool in functions:
             self.assertEqual(set(tool), {"type", "name", "description", "parameters"})
             self.assertNotIn("strict", tool)
+        hosted = [t for t in responses["tools"] if t["type"] != "function"]
+        self.assertEqual(hosted, [HOSTED_WEB_SEARCH_TOOL])
+        self.assertTrue(service.hosted_web_search_active())
 
         # Every handler registered, all with cancel_on_interruption=False.
         self.assertEqual(sorted(service._functions), sorted(EXPECTED_TOOL_NAMES))
@@ -203,7 +242,7 @@ class TestLivePipelineSmoke(unittest.IsolatedAsyncioTestCase):
                          [FrameDirection.DOWNSTREAM])
         self.assertTrue(service._user_turn.open)
 
-        # Turn end (normally the 0.8 s gap timer): transcript upstream + one stop.
+        # Turn end (normally the gap timer): transcript upstream + one stop.
         await service._close_turn("user")
         self.assertFalse(service._user_turn.open)
         transcripts = [(f, d) for f, d in pushed if isinstance(f, TranscriptionFrame)]
@@ -217,6 +256,239 @@ class TestLivePipelineSmoke(unittest.IsolatedAsyncioTestCase):
         service.broadcast_interruption.assert_not_awaited()
         for frame, _ in pushed:
             self.assertNotIn("Proposed", type(frame).__name__)
+        # A mid-sentence pause must not split the question: the user gap is
+        # 1.5 s (pipecat's 0.8 s produced thinking → listening → thinking).
+        self.assertEqual(service._user_turn.gap_secs, USER_TURN_GAP_S)
+        self.assertGreaterEqual(USER_TURN_GAP_S, 1.5)
+
+    async def test_user_fragment_while_bot_speaking_does_not_flip_phase(self):
+        """A late tail of the question during the reply is recorded, not announced."""
+        connection = await self._make_connection(FakeWebSocket([]))
+        service = connection.openai_service
+        pushed = []
+
+        async def push_frame(frame, direction=FrameDirection.DOWNSTREAM):
+            pushed.append((frame, direction))
+
+        service.push_frame = push_frame
+        service._restart_turn_timer = AsyncMock()
+        # Bot is speaking: assistant transcript turn open + fresh output audio.
+        service._assistant_turn.open = True
+        service._last_speech_mono = time.monotonic()
+        service._output_muted_until = time.monotonic() + 5  # a device stop is in force
+        delta = live_events.TranscriptDeltaEvent(
+            type="session.input_transcript.delta", delta=", California", start_ms=0, end_ms=200
+        )
+        await service._handle_evt_transcript_delta(delta)
+        self.assertTrue(service._user_turn.open)
+        self.assertFalse(any(isinstance(f, UserStartedSpeakingFrame) for f, _ in pushed))
+        # The stop-mute is NOT lifted by an unannounced fragment.
+        self.assertGreater(service._output_muted_until, time.monotonic())
+        await service._close_turn("user")
+        # Transcript still reaches the context; no UserStoppedSpeaking → no
+        # `thinking` flip either.
+        self.assertEqual([f.text for f, _ in pushed if isinstance(f, TranscriptionFrame)], [", California"])
+        self.assertFalse(any(isinstance(f, UserStoppedSpeakingFrame) for f, _ in pushed))
+
+        # Once the bot is quiet, the next fragment is a real turn again.
+        service._assistant_turn.open = False
+        service._last_speech_mono = time.monotonic() - 5
+        pushed.clear()
+        await service._handle_evt_transcript_delta(live_events.TranscriptDeltaEvent(
+            type="session.input_transcript.delta", delta="what time is it", start_ms=0, end_ms=200
+        ))
+        self.assertEqual(len([f for f, _ in pushed if isinstance(f, UserStartedSpeakingFrame)]), 1)
+        self.assertEqual(service._output_muted_until, 0.0)
+        await service._close_turn("user")
+        self.assertEqual(len([f for f, _ in pushed if isinstance(f, UserStoppedSpeakingFrame)]), 1)
+
+    async def test_input_clock_feeds_silence_while_mic_is_gated(self):
+        """The Live model only runs while input audio arrives (root cause of the
+        17 s post-tool stall): with the device mic gated during a reply, the
+        service feeds real-time-paced silence for as long as the conversation
+        is active, and nothing while the room is idle."""
+        connection = await self._make_connection(FakeWebSocket([]))
+        service = connection.openai_service
+        sent = []
+
+        async def capture(payload):
+            sent.append(payload)
+
+        service._ws_send = capture
+        service._session_started = True
+        now = time.monotonic()
+
+        # Idle connection: no activity, nothing in flight → no silence (billing).
+        service._last_activity_mono = now - INPUT_CLOCK_TAIL_S - 1
+        service._last_input_audio_mono = now - 10
+        self.assertEqual(await service._input_clock_tick(now, now - 0.1), 0)
+        self.assertEqual(sent, [])
+
+        # A tool is in flight and the device mic is gated: feed the elapsed time.
+        service._open_function_calls["call_1"] = "item_1"
+        fed = await service._input_clock_tick(now, now - 0.1)
+        self.assertEqual(fed, 100)
+        self.assertEqual(sent[-1]["type"], "session.input_audio.append")
+        audio = base64.b64decode(sent[-1]["audio"])
+        self.assertEqual(len(audio), 24000 * 2 * 100 // 1000)  # 100 ms of 24 kHz PCM16
+        self.assertEqual(audio.strip(b"\x00"), b"")
+        # Never more than one max chunk per tick, even after a long stall.
+        self.assertEqual(await service._input_clock_tick(now, now - 3.0), 500)
+        service._open_function_calls.clear()
+
+        # A delegated result just landed (activity): keep the clock running so
+        # the model can "hear" it and speak.
+        service._last_activity_mono = now - 1
+        self.assertEqual(await service._input_clock_tick(now, now - 0.1), 100)
+        # Device audio flowing → the device IS the clock; nothing is fed.
+        service._last_input_audio_mono = now - INPUT_CLOCK_GAP_S / 2
+        self.assertEqual(await service._input_clock_tick(now, now - 0.1), 0)
+        # Session not started / disconnecting → nothing.
+        service._last_input_audio_mono = now - 10
+        service._session_started = False
+        self.assertEqual(await service._input_clock_tick(now, now - 0.1), 0)
+        # Input frames stamp the clock source.
+        service._session_started = True
+        before = service._last_input_audio_mono
+        with patch.object(SafeLiveLLMService.__mro__[1], "process_frame", AsyncMock()):
+            await service.process_frame(
+                InputAudioRawFrame(audio=b"\x00\x00" * 480, sample_rate=24000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        self.assertGreater(service._last_input_audio_mono, before)
+
+    async def test_delegation_bookkeeping_and_event_log(self):
+        """response.completed without function calls must not leave is_busy() stuck,
+        and every server event type reaches the log at INFO."""
+        connection = await self._make_connection(FakeWebSocket([]))
+        service = connection.openai_service
+        service._session_started = True
+        service._ws_send = AsyncMock()
+
+        def envelope(inner, delegation_id="item_1", **fields):
+            return live_events.parse_server_event(json.dumps({
+                "type": "response.event", "delegation_id": delegation_id,
+                "event": {"type": inner, **fields},
+            }))
+
+        with self.assertLogs("app.live_service", level="INFO") as logs:
+            await service._handle_server_event(live_events.parse_server_event(json.dumps({
+                "type": "session.delegation.created", "offset_ms": 1000,
+                "delegation": {"id": "item_1", "type": "delegation", "target": "responses"},
+            })))
+            await service._handle_server_event(envelope("response.created"))
+            self.assertTrue(service.is_busy())
+            await service._handle_server_event(envelope("response.output_text.delta", delta="It"))
+            await service._handle_server_event(envelope(
+                "response.completed", response={"status": "completed", "usage": {"total_tokens": 12}}
+            ))
+            await service._handle_server_event(live_events.parse_server_event(json.dumps({
+                "type": "session.commentary.appended", "start_ms": 1000, "end_ms": 1200,
+            })))
+            await service._handle_server_event(live_events.parse_server_event(json.dumps({
+                "type": "session.something.new", "detail": 1,
+            })))
+        # No function call → the pending entry is released (pipecat leaks it).
+        self.assertEqual(service._pending_responses, {})
+        service._last_speech_mono = 0.0
+        self.assertFalse(service.is_busy())
+        text = "\n".join(logs.output)
+        self.assertIn("session.delegation.created id=item_1 target=responses", text)
+        self.assertIn("response.event/response.created delegation=item_1", text)
+        self.assertIn("response.event/response.completed delegation=item_1 status=completed tokens=12", text)
+        self.assertNotIn("output_text.delta", text)  # per-token deltas stay at DEBUG
+        self.assertIn("session.commentary.appended 1000-1200ms", text)
+        self.assertIn("session.something.new (unmodelled)", text)
+
+        # A response WITH a function call keeps the pipecat continuation path:
+        # output → response.item.create + response.create, logged at INFO.
+        service.run_function_calls = AsyncMock()
+        await service._handle_server_event(envelope("response.created", delegation_id="item_2"))
+        await service._handle_server_event(envelope(
+            "response.output_item.done", delegation_id="item_2",
+            item={"type": "function_call", "status": "completed", "call_id": "call_9",
+                  "name": "web_search", "arguments": json.dumps({"query": "weather"})},
+        ))
+        self.assertIn("call_9", service._open_function_calls)
+        await service._handle_server_event(envelope(
+            "response.completed", delegation_id="item_2", response={"status": "completed"}
+        ))
+        self.assertTrue(service.is_busy())
+        with self.assertLogs("app.live_service", level="INFO") as logs:
+            await service._send_function_call_output("call_9", "64 degrees")
+        types = [c.args[0]["type"] for c in service._ws_send.await_args_list]
+        self.assertEqual(types[-2:], ["response.item.create", "response.create"])
+        self.assertEqual(service._pending_responses, {})
+        self.assertIn("response.create sent — backend continues delegation item_2", "\n".join(logs.output))
+
+    async def test_hosted_web_search_falls_back_on_session_start_rejection(self):
+        connection = await self._make_connection(FakeWebSocket([]))
+        service = connection.openai_service
+        self.assertTrue(service.hosted_web_search_active())
+        restarted = []
+
+        async def fake_reset():
+            restarted.append(True)
+
+        service.reset_conversation = fake_reset
+        created = []
+
+        def create_task(coro, name=None):
+            task = asyncio.get_event_loop().create_task(coro)
+            created.append(task)
+            return task
+
+        service.create_task = create_task
+        service.push_error = AsyncMock()
+        await service._handle_server_event(live_events.parse_server_event(json.dumps({
+            "type": "error",
+            "error": {"type": "invalid_request_error", "code": "invalid_value",
+                      "message": "Unsupported tool type", "param": "session.delegation.responses.tools"},
+        })))
+        await asyncio.gather(*created)
+        self.assertEqual(restarted, [True])
+        self.assertFalse(service.hosted_web_search_active())
+        names = [t.get("name") for t in service.effective_tools()]
+        self.assertIn("web_search", names)
+        self.assertNotIn(HOSTED_WEB_SEARCH_TOOL, service.effective_tools())
+        service.push_error.assert_not_awaited()
+        # A second startup error is a real failure → pipecat's permanent error.
+        await service._handle_server_event(live_events.parse_server_event(json.dumps({
+            "type": "error", "error": {"type": "invalid_request_error", "message": "nope"},
+        })))
+        service.push_error.assert_awaited()
+
+    async def test_live_options_reach_the_payload(self):
+        """Verbosity + reasoning knobs and the function-tool web_search mode."""
+        self.app.live_backend_reasoning_effort = "none"
+        self.app.live_backend_verbosity = "low"
+        self.app.live_builtin_web_search = False
+        connection = await self._make_connection(FakeWebSocket([]))
+        service = connection.openai_service
+        sent = []
+
+        async def capture(payload):
+            sent.append(payload)
+
+        service._ws_send = capture
+        service.set_bootstrap_context(LLMContext())
+        await service._handle_context(service._bootstrap_context)
+        responses = sent[0]["session"]["delegation"]["responses"]
+        self.assertEqual(responses["reasoning"], {"effort": "none"})
+        self.assertEqual(responses["text"], {"verbosity": "low"})
+        self.assertEqual([t["name"] for t in responses["tools"]], EXPECTED_TOOL_NAMES)
+        self.assertTrue(all(t["type"] == "function" for t in responses["tools"]))
+        self.assertFalse(service.hosted_web_search_active())
+        # The time tool's real name lands in the backend rules when registered.
+        self.assertIn("llm__GetDateTime", backend_instructions("persona", ["HassTurnOn", "llm__GetDateTime"]))
+        self.assertTrue(backend_instructions("p", []).startswith(BACKEND_PREAMBLE + BACKEND_TOOL_RULES.format(time_tool="the date/time tool")))
+        self.assertEqual(live_instructions("persona"), "persona\n\n" + LIVE_DELEGATION_RULES)
+        self.assertEqual(resolve_reasoning_effort(""), None)
+        self.assertEqual(resolve_reasoning_effort("Default"), None)
+        self.assertEqual(resolve_reasoning_effort("MINIMAL"), "minimal")
+        self.assertEqual(resolve_reasoning_effort("xhigh"), "xhigh")  # pass-through, warned
+        self.assertEqual(resolve_text_verbosity(""), None)
+        self.assertEqual(resolve_text_verbosity("Low"), "low")
 
     async def test_output_audio_gate_drops_inter_utterance_silence(self):
         connection = await self._make_connection(FakeWebSocket([]))
@@ -396,6 +668,11 @@ class TestLivePipelineSmoke(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(types[0], "session.start")
         self.assertNotIn("input_audio_buffer.clear", types)
         self.assertNotIn("session.update", types)
+        # The input clock ran inside the pipeline (task manager) and was
+        # stopped with the connection; the device streamed the whole time, so
+        # it fed nothing.
+        self.assertIsNone(service._input_clock_task)
+        self.assertEqual(service._input_clock_total_ms, 0)
         self.assertEqual(service.session_id, "sess_test")
         self.assertIsNotNone(service.session_expires_at)
         appends = [e for e in events if e["type"] == "session.input_audio.append"]

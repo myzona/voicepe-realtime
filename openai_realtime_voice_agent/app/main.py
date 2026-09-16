@@ -9,10 +9,14 @@ from pipecat.frames.frames import UserStartedSpeakingFrame, UserStoppedSpeakingF
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 from app.mcp_service import HomeAssistantMCPService
 from app.live_service import (
-    BACKEND_PREAMBLE,
+    DEFAULT_BACKEND_REASONING_EFFORT,
     SafeLiveLLMService,
+    backend_instructions,
     is_live_model,
+    live_instructions,
     resolve_live_voice,
+    resolve_reasoning_effort,
+    resolve_text_verbosity,
 )
 from app.phase_emitter import TurnLiveness
 from app.tool_guard import guarded_tool_handler
@@ -430,10 +434,29 @@ class Application:
         # tools and reasoning are delegated to this Responses model
         # (`session.delegation.responses.model`). Optional hidden option.
         live_backend_model = os.environ.get("LIVE_BACKEND_MODEL", "").strip() or "gpt-5.4-mini"
+        # Backend latency knobs (phase 4). Reasoning effort defaults to `low`:
+        # pipecat's Live delegation sends `reasoning` only when configured,
+        # so the server default (medium for gpt-5.x) applied before — several
+        # seconds of thinking per delegation with 40 tools. `none`/`minimal`
+        # are faster still; "default" leaves the field unset. Verbosity is
+        # sent as `text.verbosity` only when set (not verified against the
+        # Live API from here — probe with tools/live_probe.py --verbosity).
+        live_backend_reasoning_effort = resolve_reasoning_effort(
+            os.environ.get("LIVE_BACKEND_REASONING_EFFORT", DEFAULT_BACKEND_REASONING_EFFORT)
+        )
+        live_backend_verbosity = resolve_text_verbosity(os.environ.get("LIVE_BACKEND_VERBOSITY", ""))
+        # Built-in Responses web_search for the Live backend (default on):
+        # saves the client hop + second Responses call of the add-on's
+        # function tool. Falls back to the function tool if session.start
+        # rejects it. Realtime keeps the function tool regardless.
+        live_builtin_web_search = os.environ.get("LIVE_BUILTIN_WEB_SEARCH", "true").lower() == "true"
         if is_live_model(openai_model):
             openai_voice = resolve_live_voice(openai_voice)
             logger.info(
-                f"🛰️ GPT-Live mode: model={openai_model}, backend={live_backend_model}, "
+                f"🛰️ GPT-Live mode: model={openai_model}, backend={live_backend_model} "
+                f"(reasoning={live_backend_reasoning_effort or 'default'}, "
+                f"verbosity={live_backend_verbosity or 'default'}, "
+                f"web_search={'built-in' if live_builtin_web_search else 'function tool'}), "
                 f"voice={openai_voice} (turn detection, speed, max_output_tokens, "
                 f"noise reduction and transcription settings do not apply)"
             )
@@ -729,6 +752,9 @@ class Application:
         self.model = openai_model
         self.voice = openai_voice
         self.live_backend_model = live_backend_model
+        self.live_backend_reasoning_effort = live_backend_reasoning_effort
+        self.live_backend_verbosity = live_backend_verbosity
+        self.live_builtin_web_search = live_builtin_web_search
         self.openai_speed = openai_speed
         self.max_output_tokens = max_output_tokens
         self.noise_reduction = noise_reduction
@@ -942,27 +968,42 @@ class Application:
         registered below run here. Live has no client VAD / turn-detection
         settings: the model is full-duplex server-side.
         """
-        from pipecat.services.openai.responses.llm import OpenAIResponsesLLMService
+        from pipecat.services.openai.responses.llm import (
+            OpenAIResponsesLLMService,
+            OpenAIResponsesReasoningConfig,
+        )
 
         instructions = self.instructions + memory_instructions()
+        tool_names = [t.get("name", "") for t in all_tools]
+        backend_kwargs = {}
+        if self.live_backend_reasoning_effort:
+            backend_kwargs["reasoning"] = OpenAIResponsesReasoningConfig(
+                effort=self.live_backend_reasoning_effort
+            )
+        if self.live_backend_verbosity:
+            backend_kwargs["extra"] = {"text": {"verbosity": self.live_backend_verbosity}}
         service = SafeLiveLLMService(
             api_key=self.openai_api_key,
             settings=SafeLiveLLMService.Settings(
                 model=self.model,
-                system_instruction=instructions,
+                system_instruction=live_instructions(instructions),
                 voice=self.voice,
             ),
             delegation=SafeLiveLLMService.ResponsesDelegation(
                 settings=OpenAIResponsesLLMService.Settings(
                     model=self.live_backend_model,
-                    system_instruction=BACKEND_PREAMBLE + instructions,
+                    system_instruction=backend_instructions(instructions, tool_names),
+                    **backend_kwargs,
                 ),
             ),
             tools=all_tools,
+            hosted_web_search=self.live_builtin_web_search and self.enable_web_search,
         )
         logger.info(
             f"🛰️ GPT-Live session: model={self.model}, voice={self.voice}, "
-            f"backend={self.live_backend_model} ({len(all_tools)} function tools)"
+            f"backend={self.live_backend_model} reasoning={self.live_backend_reasoning_effort or 'default'} "
+            f"({len(all_tools)} function tools, web_search="
+            f"{'built-in' if service.hosted_web_search_active() else 'function tool'})"
         )
         return service
 
