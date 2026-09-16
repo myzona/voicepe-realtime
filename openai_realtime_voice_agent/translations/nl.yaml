@@ -36,14 +36,26 @@ configuration:
     description: >-
       Het OpenAI-model dat luistert en praat. gpt-realtime-2 (standaard) is
       het nieuwste en slimste. gpt-realtime-mini is merkbaar goedkoper maar
-      minder slim. Wil je een model dat er niet tussen staat? Kies "custom"
-      en zet onderaan deze pagina "Toon ongebruikte optionele
-      configuratie-opties" aan om het custom-veld zichtbaar te maken.
+      minder slim. gpt-live-1 is OpenAI's full-duplex GPT-Live-model: het
+      praat en luistert tegelijk en laat tool-aanroepen doen door een apart
+      backend-model (zie "Live backend-model"); instellingen voor
+      beurtdetectie, snelheid, antwoordlengte, ruisonderdrukking en
+      transcriptie gelden er niet voor. Wil je een model dat er niet tussen
+      staat? Kies "custom" en zet onderaan deze pagina "Toon ongebruikte
+      optionele configuratie-opties" aan om het custom-veld zichtbaar te maken.
   openai_model_custom:
     name: "🗣️ Model & stem · Model (custom)"
     description: >-
       Alleen gebruikt als Model op "custom" staat. Elk geldig OpenAI
-      Realtime-model-id. (Standaard verborgen — dit is een expert-optie.)
+      Realtime-model-id (of een gpt-live-*-id). (Standaard verborgen — dit is
+      een expert-optie.)
+  live_backend_model:
+    name: "🗣️ Model & stem · Live backend-model"
+    description: >-
+      Alleen gebruikt met Model gpt-live-1: het OpenAI Responses-model dat
+      achter de live stem de smart-home-tools en het redeneren doet
+      (standaard gpt-5.4-mini). Elk Responses-model-id, bijv. gpt-5.4 voor
+      slimmer (trager, duurder) toolgebruik. (Standaard verborgen.)
   openai_voice:
     name: "🗣️ Model & stem · Stem"
     description: >-
@@ -51,7 +63,10 @@ configuration:
       het natuurlijkst. Een lopend gesprek houdt zijn stem — herstart de
       add-on na het wijzigen. Voor een stem die er niet tussen staat: kies
       "custom" en zet onderaan "Toon ongebruikte optionele
-      configuratie-opties" aan.
+      configuratie-opties" aan. Met gpt-live-1 werken alleen marin, cedar en
+      de GPT-Live-stemmen (quartz, ripple, vesper, willow, stone, gleam,
+      meridian, bossa, tempo, beacon, delta, cinder — via "custom"); andere
+      namen vallen terug op marin.
   openai_voice_custom:
     name: "🗣️ Model & stem · Stem (custom)"
     description: >-

@@ -80,7 +80,8 @@ option has plain-language inline help.
 
 | Option | Default | Note |
 |---|---|---|
-| `openai_model` | `gpt-realtime-2` | newest speech-to-speech model |
+| `openai_model` | `gpt-realtime-2` | newest speech-to-speech model; `gpt-live-1` = OpenAI's full-duplex GPT-Live (see 4a) |
+| `live_backend_model` | `gpt-5.4-mini` | GPT-Live only, hidden: the Responses model that runs tools/reasoning |
 | `openai_voice` | `marin` | `marin`/`cedar` are the newest voices |
 | `transcription_language` | *(blank)* | set your ISO code (e.g. `nl`): locks the language + logs the user transcript |
 | `instructions` | *(English default)* | the system prompt; swap the LANGUAGE line for your language |
@@ -100,6 +101,32 @@ leave them unset unless you have a specific reason.
 The **complete option reference** (every option, purpose, default, when to change
 it) is in the
 [Configuration Reference](https://github.com/TristanBrotherton/voicepe-realtime/blob/main/docs/configuration.md).
+
+### 4a. GPT-Live-1 (`openai_model: gpt-live-1`)
+
+GPT-Live is OpenAI's **full-duplex** voice model: it listens while it speaks and
+decides on its own when to answer. It does not run tools itself — it *delegates*
+to a backend Responses model (**`live_backend_model`**, default `gpt-5.4-mini`;
+hidden under "Show unused optional configuration options"). The add-on registers
+the **same tools** for that backend as for gpt-realtime (Home Assistant control via
+MCP, web search, timers, memory, enrollment, OpenClaw), so device control works the
+same way. Your `instructions` become the live model's conversation prompt and are
+also given to the backend.
+
+Differences from gpt-realtime:
+
+- **Voices**: `marin` (default), `cedar`, plus GPT-Live's own voices (`quartz`,
+  `ripple`, `vesper`, `willow`, `stone`, `gleam`, `meridian`, `bossa`, `tempo`,
+  `beacon`, `delta`, `cinder` — via Voice "custom"). Realtime-only voices
+  (`alloy`, `ash`, …) fall back to `marin` with a warning in the log.
+- **Not applicable** (ignored, logged at start): `vad_eagerness` and the
+  `server_vad` fields, `openai_speed`, `max_output_tokens`, `noise_reduction`,
+  `transcription_model` / `transcription_language` (GPT-Live always transcribes
+  both sides; the 🗣️ transcript lines are always in the log).
+- **Billing**: GPT-Live is billed per second of session audio (logged as
+  `💰 live usage`), plus the backend model's tokens.
+- Sessions expire after about an hour; the add-on refreshes them in the
+  background while the room is quiet, same as the 60-minute Realtime cap.
 
 ## 5. Web search
 

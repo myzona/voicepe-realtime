@@ -36,14 +36,26 @@ configuration:
     description: >-
       The OpenAI model that listens and talks. gpt-realtime-2 (default) is the
       newest and smartest. gpt-realtime-mini is noticeably cheaper but less
-      capable. Want a model that's not listed? Pick "custom", then enable
+      capable. gpt-live-1 is OpenAI's full-duplex GPT-Live model: it talks
+      and listens at the same time and hands tool calls to a separate
+      backend model (see "Live backend model"); turn-detection, speed,
+      reply-length, noise-reduction and transcription settings do not apply
+      to it. Want a model that's not listed? Pick "custom", then enable
       "Show unused optional configuration options" at the bottom of this page
       to reveal the custom field.
   openai_model_custom:
     name: "🗣️ Model & voice · Model (custom)"
     description: >-
       Only used when Model is set to "custom". Any valid OpenAI Realtime
-      model id. (Hidden by default — this is an expert escape hatch.)
+      model id (or a gpt-live-* id). (Hidden by default — this is an expert
+      escape hatch.)
+  live_backend_model:
+    name: "🗣️ Model & voice · Live backend model"
+    description: >-
+      Only used with Model gpt-live-1: the OpenAI Responses model that runs
+      the smart-home tools and reasoning behind the live voice (default
+      gpt-5.4-mini). Any Responses-capable model id, e.g. gpt-5.4 for
+      smarter (slower, pricier) tool use. (Hidden by default.)
   openai_voice:
     name: "🗣️ Model & voice · Voice"
     description: >-
@@ -51,6 +63,9 @@ configuration:
       most natural. A running conversation keeps its voice — restart the
       add-on after changing this. For an unlisted voice pick "custom" and
       enable "Show unused optional configuration options" at the bottom.
+      With gpt-live-1 only marin, cedar and the GPT-Live voices (quartz,
+      ripple, vesper, willow, stone, gleam, meridian, bossa, tempo, beacon,
+      delta, cinder — via "custom") work; other names fall back to marin.
   openai_voice_custom:
     name: "🗣️ Model & voice · Voice (custom)"
     description: >-

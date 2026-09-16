@@ -25,8 +25,9 @@ Two places hold configuration:
 
 | Option | Default | Purpose / when to change |
 |---|---|---|
-| `openai_model` | `gpt-realtime-2` | The speech-to-speech model. Choices: `gpt-realtime-2` (newest, smartest), `gpt-realtime-1.5`, `gpt-realtime-mini` (cheaper, less capable), `gpt-realtime`, or `custom`. |
-| `openai_model_custom` | *(hidden)* | Any valid Realtime model id, used when `openai_model` is `custom`. Expert escape hatch. |
+| `openai_model` | `gpt-realtime-2` | The speech-to-speech model. Choices: `gpt-realtime-2` (newest, smartest), `gpt-live-1` (OpenAI's full-duplex GPT-Live; tools run on `live_backend_model`), `gpt-realtime-1.5`, `gpt-realtime-mini` (cheaper, less capable), `gpt-realtime`, or `custom`. |
+| `openai_model_custom` | *(hidden)* | Any valid Realtime model id (or a `gpt-live-*` id), used when `openai_model` is `custom`. Expert escape hatch. |
+| `live_backend_model` | *(hidden, `gpt-5.4-mini`)* | GPT-Live only: the Responses model the live model delegates tool calls and reasoning to (`session.delegation.responses.model`). Any Responses-capable id. Turn-detection, speed, reply-length, noise-reduction and transcription options do not apply to GPT-Live. |
 | `openai_voice` | `marin` | The voice it speaks with. `marin`/`cedar` are the newest and most natural; also `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`. Restart the add-on after changing — a running conversation keeps its voice. |
 | `openai_voice_custom` | *(hidden)* | Any valid OpenAI voice name, used when `openai_voice` is `custom`. |
 | `openai_speed` | `1.0` | Speaking pace, `0.25`–`1.5`. Changes pace only, not the words. |

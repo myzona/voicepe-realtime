@@ -106,6 +106,10 @@ if bashio::config.has_value 'openai_model_custom'; then
     OPENAI_MODEL_CUSTOM=$(bashio::config 'openai_model_custom')
     export OPENAI_MODEL_CUSTOM
 fi
+if bashio::config.has_value 'live_backend_model'; then
+    LIVE_BACKEND_MODEL=$(bashio::config 'live_backend_model')
+    export LIVE_BACKEND_MODEL
+fi
 if bashio::config.has_value 'openai_voice_custom'; then
     OPENAI_VOICE_CUSTOM=$(bashio::config 'openai_voice_custom')
     export OPENAI_VOICE_CUSTOM

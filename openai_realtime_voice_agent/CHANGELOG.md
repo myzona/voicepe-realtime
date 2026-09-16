@@ -2,6 +2,32 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.17.0-live.2 (fork)
+
+- **GPT-Live-1 support (`openai_model: gpt-live-1`, `live_backend_model`).**
+  Selecting `gpt-live-1` runs the device on OpenAI's full-duplex GPT-Live API
+  (`wss://api.openai.com/v1/live/sessions`) with Responses delegation: the live
+  model converses, the backend model (`live_backend_model`, default
+  `gpt-5.4-mini`, hidden option) runs the SAME tool set as the Realtime path
+  (Home Assistant MCP, ask_openclaw/recall_memory, timers, memory, enrollment,
+  web_search, disconnect), so device control is unchanged. `instructions` become
+  the live session's instructions (and the backend's, behind a short
+  voice-context preamble).
+  - Voice: `marin` default; Realtime-only voice names are mapped to `marin`
+    with a warning instead of failing the session.
+  - Device phases keep working: user turns are derived from the live
+    transcript and pushed from the service (like the Realtime path), the
+    continuous silent output stream of GPT-Live is gated so the Voice PE
+    reaches idle / its follow-up window, and a device "stop" mutes the current
+    utterance and asks the model to stop.
+  - Connection recovery covers Live session expiry (`session.closed`) and a
+    dead reader, and refreshes proactively ahead of the session's `expires_at`.
+  - Turn detection, speed, reply-length, noise-reduction and transcription
+    options do not apply to GPT-Live and are logged as ignored.
+  - `gpt-realtime-*` behaviour is unchanged (pinned by the smoke tests).
+  - New: `tools/live_probe.py` opens a Live session with `OPENAI_API_KEY` from
+    the environment and prints the `session.started` summary (pre-deploy check).
+
 ## 0.17.0-live.1 (fork)
 
 - **pipecat 1.10 migration (prep for GPT-Live-1).** The add-on now runs on
