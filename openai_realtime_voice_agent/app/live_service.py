@@ -649,6 +649,15 @@ class SafeLiveLLMService(OpenAILiveLLMService):
         except Exception as e:
             logger.info(f"🛑 device interrupt → stop instruction no-op ({e!r})")
 
+    def note_device_mic_closed(self) -> None:
+        """Device follow-up window timed out (`flush`): nothing more is coming.
+
+        Ends the input-clock tail early unless a function call / delegated
+        response is still in flight (those keep the clock on their own).
+        """
+        self._last_activity_mono = 0.0
+        self._last_input_audio_mono = 0.0
+
     async def inject_context(self, text: str) -> None:
         """Quiet session context (speaker verdicts): `session.thinking.append`."""
         if not self._session_started or not text:
@@ -735,6 +744,11 @@ class SafeLiveLLMService(OpenAILiveLLMService):
     async def _handle_evt_response(self, evt):  # type: ignore[override]
         now = time.monotonic()
         self._last_activity_mono = now
+        if self.turn_liveness is not None:
+            # Backend progress counts as model activity for PhaseEmitter's
+            # thinking watchdog (a built-in web search has no client tool in
+            # flight to hold it open).
+            self.turn_liveness.last_activity = now
         inner = evt.inner_type
         if inner == "response.output_item.done":
             item = evt.event.get("item") or {}

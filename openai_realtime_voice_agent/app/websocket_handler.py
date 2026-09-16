@@ -799,8 +799,10 @@ class WebSocketHandler:
             if live_mode:
                 # GPT-Live consumes audio in real time; there is no uncommitted
                 # buffer to drop. The device closed its mic, so nothing more
-                # reaches the model until the next wake.
-                logger.info("🧽 follow-up cut-off (GPT-Live: nothing to clear)")
+                # reaches the model until the next wake — stop the input clock's
+                # tail too (silence is billed).
+                openai_service.note_device_mic_closed()
+                logger.info("🧽 follow-up cut-off (GPT-Live: nothing to clear; input clock released)")
                 return
             try:
                 await openai_service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())

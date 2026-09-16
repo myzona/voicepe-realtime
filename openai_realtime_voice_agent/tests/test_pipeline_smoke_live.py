@@ -343,6 +343,16 @@ class TestLivePipelineSmoke(unittest.IsolatedAsyncioTestCase):
         # Device audio flowing → the device IS the clock; nothing is fed.
         service._last_input_audio_mono = now - INPUT_CLOCK_GAP_S / 2
         self.assertEqual(await service._input_clock_tick(now, now - 0.1), 0)
+        # Follow-up window closed (device flush): the tail ends at once.
+        service._last_input_audio_mono = now - 1
+        service._last_activity_mono = now - 1
+        self.assertEqual(await service._input_clock_tick(now, now - 0.1), 100)
+        service.note_device_mic_closed()
+        self.assertEqual(await service._input_clock_tick(now, now - 0.1), 0)
+        # …unless a function call is still running.
+        service._open_function_calls["call_2"] = "item_2"
+        self.assertEqual(await service._input_clock_tick(now, now - 0.1), 100)
+        service._open_function_calls.clear()
         # Session not started / disconnecting → nothing.
         service._last_input_audio_mono = now - 10
         service._session_started = False
@@ -371,6 +381,7 @@ class TestLivePipelineSmoke(unittest.IsolatedAsyncioTestCase):
                 "event": {"type": inner, **fields},
             }))
 
+        service.turn_liveness = TurnLiveness()
         with self.assertLogs("app.live_service", level="INFO") as logs:
             await service._handle_server_event(live_events.parse_server_event(json.dumps({
                 "type": "session.delegation.created", "offset_ms": 1000,
@@ -390,6 +401,8 @@ class TestLivePipelineSmoke(unittest.IsolatedAsyncioTestCase):
             })))
         # No function call → the pending entry is released (pipecat leaks it).
         self.assertEqual(service._pending_responses, {})
+        # Backend progress ticked the thinking watchdog's liveness signal.
+        self.assertGreater(service.turn_liveness.last_activity, 0.0)
         service._last_speech_mono = 0.0
         self.assertFalse(service.is_busy())
         text = "\n".join(logs.output)
