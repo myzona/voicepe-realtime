@@ -1,0 +1,13 @@
+You are working in an Orca worktree of github.com/myzona/voicepe-realtime (fork of TristanBrotherton/voicepe-realtime), branch `live1-port`. Read `docs/LIVE1-PORT-PLAN.md` first and follow it — do NOT invent features beyond the plan.
+
+TASK = PHASE 1 ONLY: migrate the Home Assistant add-on `openai_realtime_voice_agent/` from pipecat-ai 0.0.97 to pipecat-ai 1.10.0 (latest) while keeping behaviour on `gpt-realtime-2` IDENTICAL. Do not add the Live-1 service yet (that is phase 2).
+
+Scope:
+1. `openai_realtime_voice_agent/pyproject.toml`: bump `pipecat-ai` to `1.10.0` (keep extras mcp/openai/websocket; if the extras were renamed in 1.x, use the equivalents), regenerate `poetry.lock` if poetry is available, otherwise document the exact command to run.
+2. Fix every import/API change in `openai_realtime_voice_agent/app/*.py` (main.py, session_manager.py, websocket_handler.py, disconnect_tool.py, web_search_tool.py, transcript_logger.py, others) — pipecat 1.x renamed settings objects (`OpenAIRealtimeLLMService.Settings`/`LLMSettings`), context (`LLMContext` + `LLMContextAggregatorPair`), turn strategies, and the WebsocketServerTransport/serializer surface. Consult the installed package source: a venv with pipecat 1.10.0 exists at `/tmp/pipecat-probe/v` (`/tmp/pipecat-probe/v/lib/python3.14/site-packages/pipecat/`). Also read pipecat's CHANGELOG / migration notes for 1.0 (pip show location or GitHub pipecat-ai/pipecat).
+3. Verify the MCP client path (`pipecat-ai[mcp]`) used for Home Assistant MCP Server tools still exists in 1.x; adapt.
+4. Make `openai_realtime_voice_agent/tests/` pass (`pytest`); add a smoke test that constructs the pipeline (no network) if one does not exist.
+5. Bump add-on version in `openai_realtime_voice_agent/config.yaml` (patch bump, e.g. 0.16.11 → 0.17.0-live.1) and add a CHANGELOG entry "pipecat 1.10 migration (prep for GPT-Live-1)".
+6. Do NOT build or install anything on the Home Assistant VM and do NOT touch the running add-on. Deliverable is a clean branch that builds locally: verify at least `docker build -f openai_realtime_voice_agent/Dockerfile --build-arg BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:bookworm openai_realtime_voice_agent/` succeeds on this Mac (Docker is available), or explain exactly what blocked it.
+
+Rules: commits authored as the repo's default git user (Edward / myzona) — NEVER add Co-authored-by or any AI attribution trailers. Small, reviewable commits with clear messages. Push the branch to `origin` (myzona fork) when done: `git push origin live1-port`. Do not open a PR to upstream. When finished, write a short summary of what changed, what was verified (test/build output), and open risks for phase 2 into `docs/LIVE1-PHASE1-REPORT.md` and commit it.
