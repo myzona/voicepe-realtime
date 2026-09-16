@@ -258,4 +258,4 @@ Pre-deploy (key in env): `python3 openai_realtime_voice_agent/tools/live_probe.p
 `77617ab` live: input clock, turn gating, tool rules, built-in web_search, event log ·
 `c29678b` 0.17.0-live.3: options, docs, probe flags ·
 `536b529` live: release the input clock on follow-up cut-off, tick the thinking watchdog ·
-this commit: docs: phase-4 report.
+`4621ac6` docs: phase-4 report · `ed4fe99` docs: configuration reference.
