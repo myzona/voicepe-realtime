@@ -8,7 +8,14 @@ import dotenv
 from pipecat.frames.frames import UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 from app.mcp_service import HomeAssistantMCPService
+from app.live_service import (
+    BACKEND_PREAMBLE,
+    SafeLiveLLMService,
+    is_live_model,
+    resolve_live_voice,
+)
 from app.phase_emitter import TurnLiveness
+from app.tool_guard import guarded_tool_handler
 from app.disconnect_tool import get_disconnect_tool_definition, create_disconnect_tool_handler
 from app.web_search_tool import get_web_search_tool_definition, create_web_search_tool_handler
 from app.audio_recording_service import AudioRecordingService
@@ -282,48 +289,16 @@ class SafeRealtimeLLMService(OpenAIRealtimeLLMService):
         killing them halfway. This single override covers every registration
         path (MCP tools via pipecat's MCPClient, web_search, disconnect).
 
-        The handler is also wrapped to tick its connection's liveness around its run, so
-        the PhaseEmitter's thinking-watchdog knows a tool is in flight and a
-        slow tool (web search: 10-20 s of pipeline silence) is never mistaken
-        for a dead turn. All our handlers use the single-param
-        FunctionCallParams signature, so the wrapper does too (pipecat
-        inspects the signature to pick the calling convention).
-
-        pipecat 1.x note: the wrapper is a plain closure, so it deliberately
-        does NOT carry pipecat's `_pipecat_cleanup` attribute that the
-        MCPClient tool wrapper has. That attribute makes the LLM service close
-        the MCP connection when THIS service is cleaned up — wrong here, the
-        MCP client is shared by every device's session (see mcp_service.py).
-        `timeout_secs` / `cancellable_by_llm` are passed through unchanged.
+        The handler is also wrapped (app/tool_guard.py, shared with the
+        GPT-Live-1 service) with the speaker gate and the turn-liveness ticks
+        the PhaseEmitter's thinking-watchdog reads, so a slow tool (web
+        search: 10-20 s of pipeline silence) is never mistaken for a dead
+        turn. `timeout_secs` / `cancellable_by_llm` are passed through
+        unchanged.
         """
-        async def liveness_tracked(params):
-            # Speaker gate (fork): tools listed in male_only_tools only execute
-            # when the last voice-type verdict is "male". Enforced HERE — below
-            # the model — so prompt tricks can't bypass it. Fails closed on
-            # uncertain/stale/absent verdicts. This is convenience gating on a
-            # voice-type heuristic, not biometric auth.
-            if self.male_only_tools and function_name in self.male_only_tools:
-                speaker = self.speaker_probe.gate_speaker() if self.speaker_probe else "unknown"
-                if speaker != "male":
-                    owner = (self.speaker_probe.male_name if self.speaker_probe else "") or "the owner"
-                    logger.info(f"⛔ speaker gate blocked '{function_name}' (speaker={speaker})")
-                    await params.result_callback({
-                        "error": (
-                            f"Not available: this capability is reserved for {owner}, "
-                            f"and the current speaker's voice was not recognized as {owner}. "
-                            f"Relay this politely."
-                        )
-                    })
-                    return
-            self.turn_liveness.tool_started()
-            try:
-                return await handler(params)
-            finally:
-                self.turn_liveness.tool_finished()
-
         super().register_function(
             function_name,
-            liveness_tracked,
+            guarded_tool_handler(self, function_name, handler),
             cancel_on_interruption=False,
             timeout_secs=timeout_secs,
             cancellable_by_llm=cancellable_by_llm,
@@ -451,6 +426,17 @@ class Application:
         # returns the custom value when the dropdown is "custom", else the dropdown.
         openai_model = _resolve_choice("OPENAI_MODEL", "OPENAI_MODEL_CUSTOM", "gpt-realtime-2")
         openai_voice = _resolve_choice("OPENAI_VOICE", "OPENAI_VOICE_CUSTOM", "marin")
+        # GPT-Live-1 (openai_model: gpt-live-1): the live model only converses;
+        # tools and reasoning are delegated to this Responses model
+        # (`session.delegation.responses.model`). Optional hidden option.
+        live_backend_model = os.environ.get("LIVE_BACKEND_MODEL", "").strip() or "gpt-5.4-mini"
+        if is_live_model(openai_model):
+            openai_voice = resolve_live_voice(openai_voice)
+            logger.info(
+                f"🛰️ GPT-Live mode: model={openai_model}, backend={live_backend_model}, "
+                f"voice={openai_voice} (turn detection, speed, max_output_tokens, "
+                f"noise reduction and transcription settings do not apply)"
+            )
 
         # Playback speed (post-generation rate): 0.25-1.5, 1.0 = normal. Clamped.
         try:
@@ -742,6 +728,7 @@ class Application:
         self.instructions = instructions
         self.model = openai_model
         self.voice = openai_voice
+        self.live_backend_model = live_backend_model
         self.openai_speed = openai_speed
         self.max_output_tokens = max_output_tokens
         self.noise_reduction = noise_reduction
@@ -762,19 +749,24 @@ class Application:
         return probe.name_for(probe.gate_speaker()) if probe else None
     
     async def create_openai_service(self, connection):
-        """Create an OpenAI Realtime session for ONE device.
+        """Create an OpenAI session (Realtime or GPT-Live-1) for ONE device.
 
         This used to assign the single `self.openai_service`, so a second
         device connecting replaced the first device's live session and wiped
         its conversation. It now returns a fresh service that belongs to the
         calling connection and to nothing else.
 
+        `openai_model: gpt-live-1` selects `SafeLiveLLMService` (Live API with
+        Responses delegation to `live_backend_model`); every other model is
+        the Realtime path. Tool assembly and handler registration are shared,
+        so HA control works identically on both.
+
         Args:
             connection: The DeviceConnection the session will serve. Its
                 transport is needed so device-scoped tools act on that device.
 
         Returns:
-            A newly created SafeRealtimeLLMService.
+            A newly created SafeRealtimeLLMService or SafeLiveLLMService.
         """
         client_id = connection.device_id
         if self._pipeline_lock is None:
@@ -799,19 +791,7 @@ class Application:
                 except Exception as e:
                     logger.warning(f"⚠️ Error caching context from old service for client {client_id}: {e}")
             
-            # Create session properties with audio configuration
-            from pipecat.services.openai.realtime.events import (
-                SessionProperties,
-                AudioConfiguration,
-                AudioInput,
-                AudioOutput,
-                TurnDetection,
-                SemanticTurnDetection,
-                InputAudioTranscription,
-                InputAudioNoiseReduction,
-            )
-            
-            # Collect all tool definitions for session properties. The
+            # Collect all tool definitions for the session. The
             # disconnect_client tool is opt-in (see enable_disconnect_tool): by
             # default we do NOT expose it, so the model can't hang up the device
             # mid-conversation.
@@ -872,108 +852,12 @@ class Application:
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to fetch MCP tool definitions: {e}")
             
-            # Turn detection: semantic_vad (recommended — semantic end-of-turn,
-            # echo-resistant, doesn't cut the user off) or classic server_vad.
-            if self.turn_detection_type == "semantic_vad":
-                turn_detection = SemanticTurnDetection(
-                    eagerness=self.vad_eagerness,
-                    # create_response=True (default): the SERVER creates a
-                    # response on every detected end-of-turn. This is required for
-                    # multi-turn conversation. Pipecat's
-                    # OpenAIRealtimeLLMService._handle_context only auto-creates a
-                    # response for the FIRST context (turn 1) and after tool
-                    # results (its else-branch just updates the context); a plain
-                    # 2nd/3rd user turn therefore gets NO response unless the
-                    # server makes it. We previously set this False to stop a
-                    # turn-1 double-response (server + Pipecat first-context both
-                    # creating → `conversation_already_has_active_response`), but
-                    # that silently broke every turn after the first (device hung
-                    # in "thinking"). True is the correct trade: the server drives
-                    # all user-turn responses; Pipecat still creates the post-tool
-                    # response via _process_completed_function_calls. To stop the
-                    # turn-1 double (server + Pipecat-first-context both creating →
-                    # conversation_already_has_active_response), run() seeds
-                    # self._context once at startup with a kickoff LLMRunFrame, so
-                    # the user's first real turn hits the else-branch too.
-                    create_response=self.semantic_vad_create_response,
-                    interrupt_response=self.interrupt_response,
-                )
-            else:
-                turn_detection = TurnDetection(
-                    type="server_vad",
-                    threshold=self.vad_threshold,
-                    prefix_padding_ms=self.vad_prefix_padding_ms,
-                    silence_duration_ms=self.vad_silence_duration_ms,
-                )
-
-            # Optionally pin the input-transcription language to stop the model
-            # drifting between languages (e.g. "nl"). Empty -> auto-detect.
-            # transcription_model picks the STT used for the transcript text.
-            transcription = (
-                InputAudioTranscription(
-                    model=self.transcription_model,
-                    language=self.transcription_language,
-                )
-                if self.transcription_language
-                else None
-            )
-
-            # Optional near/far-field input noise reduction (helps the VAD reject
-            # background noise / residual speaker leak). None = off (default).
-            noise_reduction = (
-                InputAudioNoiseReduction(type=self.noise_reduction)
-                if self.noise_reduction
-                else None
-            )
-
-            session_properties = SessionProperties(
-                # Voice-instructed memory: standing household notes are folded
-                # into the instructions at every session creation.
-                instructions=self.instructions + memory_instructions(),
-                # Cap the reply length: bounds runaway monologues + per-response
-                # output-token cost. None = unlimited (the API default "inf").
-                max_output_tokens=self.max_output_tokens,
-                audio=AudioConfiguration(
-                    input=AudioInput(
-                        turn_detection=turn_detection,
-                        transcription=transcription,
-                        noise_reduction=noise_reduction,
-                    ),
-                    # speed is a post-generation playback rate (0.25-1.5, 1.0 = normal).
-                    output=AudioOutput(voice=self.voice, speed=self.openai_speed)
-                ),
-                tools=all_tools
-            )
-
-            if self.turn_detection_type == "semantic_vad":
-                logger.info(
-                    f"🎚️ Turn detection: semantic_vad (eagerness={self.vad_eagerness}, "
-                    f"create_response={self.semantic_vad_create_response}, "
-                    f"interrupt_response={self.interrupt_response})"
-                    + (f", transcription={self.transcription_model} (lang={self.transcription_language})" if self.transcription_language else " (transcription off)")
-                )
-            else:
-                logger.info(
-                    f"🎚️ Turn detection: server_vad (threshold={self.vad_threshold}, "
-                    f"silence_duration_ms={self.vad_silence_duration_ms})"
-                    + (f", transcription={self.transcription_model} (lang={self.transcription_language})" if self.transcription_language else " (transcription off)")
-                )
-
             logger.info(f"🔧 Creating session with {len(all_tools)} tools: {[tool.get('name', 'unknown') for tool in all_tools]}")
-            
-            # Create new service instance. pipecat 1.x takes model + session
-            # properties through a Settings object (the bare `model=` /
-            # `session_properties=` kwargs are deprecated shims). The model is
-            # a connection-level parameter (WebSocket URL query), so it MUST be
-            # set here: pipecat's own default moved to gpt-realtime-2.1.
-            service = SafeRealtimeLLMService(
-                api_key=self.openai_api_key,
-                settings=SafeRealtimeLLMService.Settings(
-                    model=self.model,
-                    session_properties=session_properties,
-                ),
-                start_audio_paused=False,
-            )
+
+            if is_live_model(self.model):
+                service = self._build_live_service(all_tools)
+            else:
+                service = self._build_realtime_service(all_tools)
             service.speaker_probe = None
             service.male_only_tools = set()
             connection.turn_liveness = TurnLiveness()
@@ -1047,6 +931,161 @@ class Application:
             logger.info("✅ New OpenAI Session created")
             return service
 
+    def _build_live_service(self, all_tools):
+        """Build the GPT-Live-1 service (pipecat OpenAILiveLLMService, Responses delegation).
+
+        `session.start` carries: model (gpt-live-1), instructions (persona +
+        household memory notes), audio.output.voice, and
+        delegation={type: responses, responses: {model: live_backend_model,
+        instructions, tools}}. The tool list is the same provider-native list
+        the Realtime path sends; the backend model calls them and the handlers
+        registered below run here. Live has no client VAD / turn-detection
+        settings: the model is full-duplex server-side.
+        """
+        from pipecat.services.openai.responses.llm import OpenAIResponsesLLMService
+
+        instructions = self.instructions + memory_instructions()
+        service = SafeLiveLLMService(
+            api_key=self.openai_api_key,
+            settings=SafeLiveLLMService.Settings(
+                model=self.model,
+                system_instruction=instructions,
+                voice=self.voice,
+            ),
+            delegation=SafeLiveLLMService.ResponsesDelegation(
+                settings=OpenAIResponsesLLMService.Settings(
+                    model=self.live_backend_model,
+                    system_instruction=BACKEND_PREAMBLE + instructions,
+                ),
+            ),
+            tools=all_tools,
+        )
+        logger.info(
+            f"🛰️ GPT-Live session: model={self.model}, voice={self.voice}, "
+            f"backend={self.live_backend_model} ({len(all_tools)} function tools)"
+        )
+        return service
+
+    def _build_realtime_service(self, all_tools):
+        """Build the gpt-realtime-* service (pipecat OpenAIRealtimeLLMService).
+
+        Unchanged phase-1 code path: the session.update payload this produces
+        is pinned byte-for-byte by tests/test_pipeline_smoke.py.
+        """
+        from pipecat.services.openai.realtime.events import (
+            SessionProperties,
+            AudioConfiguration,
+            AudioInput,
+            AudioOutput,
+            TurnDetection,
+            SemanticTurnDetection,
+            InputAudioTranscription,
+            InputAudioNoiseReduction,
+        )
+
+        # Turn detection: semantic_vad (recommended — semantic end-of-turn,
+        # echo-resistant, doesn't cut the user off) or classic server_vad.
+        if self.turn_detection_type == "semantic_vad":
+            turn_detection = SemanticTurnDetection(
+                eagerness=self.vad_eagerness,
+                # create_response=True (default): the SERVER creates a
+                # response on every detected end-of-turn. This is required for
+                # multi-turn conversation. Pipecat's
+                # OpenAIRealtimeLLMService._handle_context only auto-creates a
+                # response for the FIRST context (turn 1) and after tool
+                # results (its else-branch just updates the context); a plain
+                # 2nd/3rd user turn therefore gets NO response unless the
+                # server makes it. We previously set this False to stop a
+                # turn-1 double-response (server + Pipecat first-context both
+                # creating → `conversation_already_has_active_response`), but
+                # that silently broke every turn after the first (device hung
+                # in "thinking"). True is the correct trade: the server drives
+                # all user-turn responses; Pipecat still creates the post-tool
+                # response via _process_completed_function_calls. To stop the
+                # turn-1 double (server + Pipecat-first-context both creating →
+                # conversation_already_has_active_response), run() seeds
+                # self._context once at startup with a kickoff LLMRunFrame, so
+                # the user's first real turn hits the else-branch too.
+                create_response=self.semantic_vad_create_response,
+                interrupt_response=self.interrupt_response,
+            )
+        else:
+            turn_detection = TurnDetection(
+                type="server_vad",
+                threshold=self.vad_threshold,
+                prefix_padding_ms=self.vad_prefix_padding_ms,
+                silence_duration_ms=self.vad_silence_duration_ms,
+            )
+
+        # Optionally pin the input-transcription language to stop the model
+        # drifting between languages (e.g. "nl"). Empty -> auto-detect.
+        # transcription_model picks the STT used for the transcript text.
+        transcription = (
+            InputAudioTranscription(
+                model=self.transcription_model,
+                language=self.transcription_language,
+            )
+            if self.transcription_language
+            else None
+        )
+
+        # Optional near/far-field input noise reduction (helps the VAD reject
+        # background noise / residual speaker leak). None = off (default).
+        noise_reduction = (
+            InputAudioNoiseReduction(type=self.noise_reduction)
+            if self.noise_reduction
+            else None
+        )
+
+        session_properties = SessionProperties(
+            # Voice-instructed memory: standing household notes are folded
+            # into the instructions at every session creation.
+            instructions=self.instructions + memory_instructions(),
+            # Cap the reply length: bounds runaway monologues + per-response
+            # output-token cost. None = unlimited (the API default "inf").
+            max_output_tokens=self.max_output_tokens,
+            audio=AudioConfiguration(
+                input=AudioInput(
+                    turn_detection=turn_detection,
+                    transcription=transcription,
+                    noise_reduction=noise_reduction,
+                ),
+                # speed is a post-generation playback rate (0.25-1.5, 1.0 = normal).
+                output=AudioOutput(voice=self.voice, speed=self.openai_speed)
+            ),
+            tools=all_tools
+        )
+
+        if self.turn_detection_type == "semantic_vad":
+            logger.info(
+                f"🎚️ Turn detection: semantic_vad (eagerness={self.vad_eagerness}, "
+                f"create_response={self.semantic_vad_create_response}, "
+                f"interrupt_response={self.interrupt_response})"
+                + (f", transcription={self.transcription_model} (lang={self.transcription_language})" if self.transcription_language else " (transcription off)")
+            )
+        else:
+            logger.info(
+                f"🎚️ Turn detection: server_vad (threshold={self.vad_threshold}, "
+                f"silence_duration_ms={self.vad_silence_duration_ms})"
+                + (f", transcription={self.transcription_model} (lang={self.transcription_language})" if self.transcription_language else " (transcription off)")
+            )
+
+        
+        # Create new service instance. pipecat 1.x takes model + session
+        # properties through a Settings object (the bare `model=` /
+        # `session_properties=` kwargs are deprecated shims). The model is
+        # a connection-level parameter (WebSocket URL query), so it MUST be
+        # set here: pipecat's own default moved to gpt-realtime-2.1.
+        service = SafeRealtimeLLMService(
+            api_key=self.openai_api_key,
+            settings=SafeRealtimeLLMService.Settings(
+                model=self.model,
+                session_properties=session_properties,
+            ),
+            start_audio_paused=False,
+        )
+        return service
+
     def _preseed_context(self, service) -> None:
         """Stop pipecat speaking spontaneously on a brand-new session.
 
@@ -1065,6 +1104,11 @@ class Application:
         Args:
             service: The freshly created service.
         """
+        if isinstance(service, SafeLiveLLMService):
+            # Live starts its session FROM the aggregator pair's context (see
+            # SafeLiveLLMService.set_bootstrap_context); pre-seeding an empty
+            # one here would make it start with no history.
+            return
         if not (self.turn_detection_type == "semantic_vad" and self.semantic_vad_create_response):
             return
         try:

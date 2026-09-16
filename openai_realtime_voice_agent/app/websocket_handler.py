@@ -18,6 +18,7 @@ from pipecat.audio.utils import create_stream_resampler
 from pipecat.services.openai.realtime import events as openai_rt_events
 
 from app.device_registry import DeviceConnection, DeviceRegistry, device_id_from_websocket
+from app.live_service import SafeLiveLLMService
 from app.multi_client_transport import MixedFastAPIWebsocketTransport
 from app.raw_audio_serializer import RawAudioSerializer
 from app.session_manager import SessionManager
@@ -162,6 +163,10 @@ class ConnectionRecovery(FrameProcessor):
     _SESSION_DEAD_MARKERS = (
         "session_expired",
         "maximum duration",
+        # GPT-Live: SafeLiveLLMService reports an unexpected `session.closed`
+        # (reason expired / content / connection_lost) with this message —
+        # the socket may linger but the session is gone.
+        "live session closed",
     )
     RECONNECT_COOLDOWN_S = 5.0
     IDLE_UNSTICK_COOLDOWN_S = 2.0
@@ -171,6 +176,9 @@ class ConnectionRecovery(FrameProcessor):
     REFRESH_AGE_S = 55 * 60   # refresh once the session is this old
     REFRESH_QUIET_S = 60.0    # ... and no mic audio flowed for this long
     REFRESH_CHECK_S = 60.0    # poll cadence of the background check
+    # GPT-Live sessions carry an explicit `expires_at` (session.started); when
+    # the service exposes it, refresh this long before it instead of by age.
+    REFRESH_BEFORE_EXPIRY_S = 5 * 60
 
     def __init__(self, openai_service, emit_idle=None, phase_emitter=None, **kwargs):
         super().__init__(**kwargs)
@@ -224,10 +232,12 @@ class ConnectionRecovery(FrameProcessor):
             session_dead = any(m in msg for m in self._SESSION_DEAD_MARKERS)
             # (c) the OpenAI READ side died or ended (network drop / silent
             #     server close). pipecat produces no ErrorFrame for these at
-            #     all — SafeRealtimeLLMService wraps the receive loop and
-            #     reports them with this message. Without it the session sat
-            #     deaf for hours until the next utterance hit the dead socket.
-            reader_dead = "realtime receive loop" in msg
+            #     all — SafeRealtimeLLMService / SafeLiveLLMService wrap the
+            #     receive loop and report them with this message ("realtime
+            #     receive loop …" / "live receive loop …"). Without it the
+            #     session sat deaf for hours until the next utterance hit the
+            #     dead socket.
+            reader_dead = "receive loop" in msg
             if send_flood or session_dead or reader_dead:
                 now = time.monotonic()
                 if now - self._last_attempt >= self.RECONNECT_COOLDOWN_S:
@@ -267,7 +277,7 @@ class ConnectionRecovery(FrameProcessor):
         age_s = t0 - self._connected_at
         try:
             logger.warning(
-                f"🔌 OpenAI Realtime connection lost after {age_s:.0f}s "
+                f"🔌 OpenAI session connection lost after {age_s:.0f}s "
                 f"({reason[:90]}) — reconnecting…"
             )
             # Unstick the device first, regardless of how the reconnect goes.
@@ -282,7 +292,7 @@ class ConnectionRecovery(FrameProcessor):
             await reset()
             self._connected_at = time.monotonic()
             logger.info(
-                f"✅ OpenAI Realtime session reconnected in {self._connected_at - t0:.1f}s "
+                f"✅ OpenAI session reconnected in {self._connected_at - t0:.1f}s "
                 f"(gap the user may have heard)"
             )
         except Exception as e:
@@ -308,20 +318,37 @@ class ConnectionRecovery(FrameProcessor):
                 now = time.monotonic()
                 age = now - self._connected_at
                 quiet = now - self._last_input_audio
-                busy = getattr(self._service, "_current_assistant_response", None) is not None
-                if (age >= self.REFRESH_AGE_S and quiet >= self.REFRESH_QUIET_S
+                busy = self._service_busy()
+                due = age >= self.REFRESH_AGE_S
+                # GPT-Live: the server tells us when the session expires; go by
+                # that when available (sessions are ~1 h but the cap is theirs).
+                expires_at = getattr(self._service, "session_expires_at", None)
+                if expires_at:
+                    due = due or time.time() >= expires_at - self.REFRESH_BEFORE_EXPIRY_S
+                if (due and quiet >= self.REFRESH_QUIET_S
                         and not busy and now - self._last_attempt >= self.RECONNECT_COOLDOWN_S):
                     self._reconnecting = True
                     self._last_attempt = now
                     logger.info(
                         f"🔄 proactive session refresh (session {age/60:.0f} min old, "
-                        f"quiet for {quiet:.0f}s) — staying ahead of the 60-min cap"
+                        f"quiet for {quiet:.0f}s) — staying ahead of the session cap"
                     )
-                    await self._recover("proactive refresh before the 60-min session cap")
+                    await self._recover("proactive refresh before the session cap")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.warning(f"⚠️ proactive refresh loop error: {e!r}")
+
+    def _service_busy(self) -> bool:
+        """Is the OpenAI service mid-turn? (Never refresh during one.)"""
+        is_busy = getattr(self._service, "is_busy", None)
+        if callable(is_busy):
+            try:
+                return bool(is_busy())
+            except Exception:
+                return True
+        # Realtime service: an assistant response is being generated/streamed.
+        return getattr(self._service, "_current_assistant_response", None) is not None
 
     async def close(self) -> None:
         """Stop background work owned by this pipeline processor."""
@@ -488,9 +515,21 @@ class WebSocketHandler:
         # Create context aggregator with cached context if available
         context_aggregator = None
         context_initializer = None
+        # GPT-Live-1 vs gpt-realtime-*: the pipeline is identical; only the
+        # device-event → OpenAI-event mapping below differs (Live has no input
+        # buffer to clear, no response.cancel and no conversation items).
+        live_mode = isinstance(openai_service, SafeLiveLLMService)
         if self.session_manager:
             context_aggregator = self.session_manager.create_context_aggregator(client_id)
-            context_initializer = self.session_manager.create_context_initializer(client_id, context_aggregator)
+            if live_mode:
+                # Live starts its session from this context right after
+                # StartFrame (cached messages become the `input` history), so
+                # the ContextInitializer's LLMMessagesUpdateFrame replay —
+                # which exists to push conversation items into a Realtime
+                # session — is not needed and would duplicate the history.
+                openai_service.set_bootstrap_context(context_aggregator.user().context)
+            else:
+                context_initializer = self.session_manager.create_context_initializer(client_id, context_aggregator)
         
         # Build pipeline components. InputResampler runs FIRST (right after the
         # transport) so every later stage — VAD, context aggregator, OpenAI
@@ -683,6 +722,13 @@ class WebSocketHandler:
             # the 1.5 s time-window alone misses responses that land later —
             # OpenAI replying to the spoken "stop", or a slow tool's answer.
             _kill_next_response["v"] = True
+            if live_mode:
+                # GPT-Live: no input buffer, no response.cancel. The service
+                # mutes this utterance's audio locally and asks the model to
+                # stop (session.instructions.append); the device has already
+                # silenced playback itself.
+                await openai_service.handle_device_interrupt()
+                return
             try:
                 await openai_service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
                 logger.info("🛑 device interrupt → input_audio_buffer.clear sent (drop in-flight user audio)")
@@ -697,7 +743,6 @@ class WebSocketHandler:
             except Exception as e:
                 logger.info(f"🛑 device interrupt → response.cancel no-op ({e!r})")
 
-        @openai_service.event_handler("on_conversation_item_created")
         async def _kill_racing_response(service, item_id, item):
             # Pipecat fires this for every conversation.item.added; only an
             # ASSISTANT item right after a device interrupt is the racing
@@ -721,6 +766,11 @@ class WebSocketHandler:
             except Exception as e:
                 logger.info(f"🛑 post-interrupt racing-response cancel no-op ({e!r})")
 
+        if not live_mode:
+            # Realtime only: Live has no conversation items (and the kill
+            # window has nothing to cancel — see handle_device_interrupt).
+            openai_service.add_event_handler("on_conversation_item_created", _kill_racing_response)
+
         async def _on_device_session_start():
             # va_client sends {"type":"start"} once per WebSocket CONNECTION
             # (on connect) — NOT per wake. A reconnect mid-utterance (wifi
@@ -728,6 +778,9 @@ class WebSocketHandler:
             # utterance in OpenAI's input buffer; start every (re)connection
             # with a clean one. The per-WAKE/follow-up stale-buffer case is
             # covered by the device's {"type":"flush"} on follow-up timeout.
+            if live_mode:
+                logger.info("🎬 device (re)connected (GPT-Live: no input buffer to clear)")
+                return
             try:
                 await openai_service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
                 logger.info("🎬 device (re)connected → input_audio_buffer.clear (clean start)")
@@ -743,6 +796,12 @@ class WebSocketHandler:
             # Also a turn boundary for the dangling-VAD guard: the follow-up
             # closed without speech, so any later server-VAD stop is dangling.
             phase_emitter.note_wake()
+            if live_mode:
+                # GPT-Live consumes audio in real time; there is no uncommitted
+                # buffer to drop. The device closed its mic, so nothing more
+                # reaches the model until the next wake.
+                logger.info("🧽 follow-up cut-off (GPT-Live: nothing to clear)")
+                return
             try:
                 await openai_service.send_client_event(openai_rt_events.InputAudioBufferClearEvent())
                 logger.info("🧽 follow-up cut-off → input_audio_buffer.clear (drop partial utterance)")
@@ -797,6 +856,13 @@ class WebSocketHandler:
 
                 async def _on_speaker_verdict(label, name, f0):
                     try:
+                        if live_mode:
+                            # Quiet context for the live model
+                            # (session.thinking.append, delegation_id null).
+                            await openai_service.inject_context(
+                                verdict_text(connection.speaker_probe, label, name, f0)
+                            )
+                            return
                         await openai_service.send_client_event(
                             openai_rt_events.ConversationItemCreateEvent(
                                 item=openai_rt_events.ConversationItem(
