@@ -2,6 +2,41 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.17.0-live.3 (fork)
+
+- **GPT-Live: no more stall after a tool call.** The live model only advances
+  while it receives input audio, and the Voice PE stops streaming its mic the
+  moment a reply starts — so a tool result that arrived after a filler
+  utterance was not spoken until the follow-up window re-opened the mic (17 s
+  observed). The add-on now feeds real-time-paced silence to the session while
+  a turn, function call or delegated response is in flight and no device audio
+  is arriving (`🔇 input clock` log lines); idle time is not fed.
+- **GPT-Live: backend tool rules + delegation rules.** The backend model is
+  told to always call the date/time tool (`GetDateTime`) for time/date, to use
+  Home Assistant tools for device state and web search for current facts, and
+  to answer only from tool results; the live model is told it knows no time,
+  weather, news or device state itself and must delegate (it answered
+  "4:06 p.m." from thin air), and not to hum or fill the pause while the
+  backend works.
+- **GPT-Live: built-in web search** (`live_builtin_web_search`, default on):
+  the backend uses OpenAI's Responses `web_search` tool directly instead of the
+  add-on's `web_search` function (one hop and one Responses call fewer). Falls
+  back to the function tool once if `session.start` rejects it.
+- **GPT-Live: latency knobs** `live_backend_reasoning_effort` (default `low`;
+  before, the server default applied) and `live_backend_verbosity` (unset);
+  `tools/live_probe.py` gained `--reasoning-effort`, `--verbosity`,
+  `--builtin-web-search`.
+- **GPT-Live: phase flapping fixed.** A user transcript fragment that arrives
+  while the reply is playing (late tail of the question, echo) no longer flips
+  the device to `listening`/`thinking` (which re-opened the mic mid-reply); the
+  user turn gap is 1.5 s so a mid-sentence pause does not split one question.
+- **GPT-Live: diagnostics.** Every Live server event type is logged at INFO
+  (audio summarised every 5 s, per-token deltas at DEBUG), one `⏱️ live turn`
+  line per reply with the stage latencies, usage logged once per change, and
+  delegations that made no function call are released (pipecat kept them
+  pending, which pinned the busy flag and blocked the proactive refresh).
+- `gpt-realtime-*` behaviour unchanged.
+
 ## 0.17.0-live.2 (fork)
 
 - **GPT-Live-1 support (`openai_model: gpt-live-1`, `live_backend_model`).**

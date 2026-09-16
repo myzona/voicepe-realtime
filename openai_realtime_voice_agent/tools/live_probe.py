@@ -10,6 +10,12 @@ No audio is sent; the session costs a second or two of Live time.
     OPENAI_API_KEY=... python3 tools/live_probe.py
     OPENAI_API_KEY=... python3 tools/live_probe.py --voice vesper --backend gpt-5.4
     OPENAI_API_KEY=... python3 tools/live_probe.py --with-tool   # include one function tool
+    OPENAI_API_KEY=... python3 tools/live_probe.py --reasoning-effort low --builtin-web-search
+    OPENAI_API_KEY=... python3 tools/live_probe.py --verbosity low  # is text.verbosity accepted?
+
+The phase-4 flags mirror the add-on options `live_backend_reasoning_effort`,
+`live_backend_verbosity` and `live_builtin_web_search`: a rejected field comes
+back as the API's `error` (exit 1) instead of a deaf device.
 
 The key comes ONLY from the environment and is never printed. Needs only the
 `websockets` package (a pipecat dependency, so any venv with the add-on's
@@ -45,25 +51,38 @@ def _summary(session: dict) -> str:
         f"delegation.type : {delegation.get('type')}",
         f"backend model   : {responses.get('model')}",
         f"backend tools   : {[t.get('type') + ':' + str(t.get('name', '')) for t in responses.get('tools') or []]}",
+        f"backend reasoning: {responses.get('reasoning')}",
+        f"backend text    : {responses.get('text')}",
+        f"other fields    : {sorted(k for k in session if k not in ('id', 'status', 'model', 'audio', 'delegation', 'expires_at', 'instructions', 'input'))}",
         f"expires_at      : {expires}{ttl}",
         f"instructions    : {(session.get('instructions') or '')[:60]!r}",
     ])
 
 
-async def probe(model: str, backend: str, voice: str, instructions: str, with_tool: bool, timeout: float) -> int:
+async def probe(model: str, backend: str, voice: str, instructions: str, with_tool: bool, timeout: float,
+                reasoning_effort: str = "", verbosity: str = "", builtin_web_search: bool = False) -> int:
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         print("OPENAI_API_KEY is not set in the environment", file=sys.stderr)
         return 2
 
     responses: dict = {"model": backend}
+    tools = []
     if with_tool:
-        responses["tools"] = [{
+        tools.append({
             "type": "function",
             "name": "probe_noop",
             "description": "Probe tool; never call it.",
             "parameters": {"type": "object", "properties": {}, "required": []},
-        }]
+        })
+    if builtin_web_search:
+        tools.append({"type": "web_search"})
+    if tools:
+        responses["tools"] = tools
+    if reasoning_effort:
+        responses["reasoning"] = {"effort": reasoning_effort}
+    if verbosity:
+        responses["text"] = {"verbosity": verbosity}
     start = {
         "type": "session.start",
         "event_id": "probe_start",
@@ -122,10 +141,20 @@ def main() -> int:
     p.add_argument("--voice", default="marin")
     p.add_argument("--instructions", default="You are a test assistant. Stay silent.")
     p.add_argument("--with-tool", action="store_true", help="include one function tool in the delegation")
+    p.add_argument("--builtin-web-search", action="store_true",
+                   help="include the Responses built-in {type: web_search} tool (live_builtin_web_search)")
+    p.add_argument("--reasoning-effort", default="",
+                   help="delegation.responses.reasoning.effort, e.g. none|minimal|low|medium (live_backend_reasoning_effort)")
+    p.add_argument("--verbosity", default="",
+                   help="delegation.responses.text.verbosity, e.g. low (live_backend_verbosity)")
     p.add_argument("--timeout", type=float, default=20.0)
     args = p.parse_args()
     try:
-        return asyncio.run(probe(args.model, args.backend, args.voice, args.instructions, args.with_tool, args.timeout))
+        return asyncio.run(probe(
+            args.model, args.backend, args.voice, args.instructions, args.with_tool, args.timeout,
+            reasoning_effort=args.reasoning_effort, verbosity=args.verbosity,
+            builtin_web_search=args.builtin_web_search,
+        ))
     except KeyboardInterrupt:
         return 130
 

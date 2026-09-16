@@ -56,6 +56,27 @@ configuration:
       the smart-home tools and reasoning behind the live voice (default
       gpt-5.4-mini). Any Responses-capable model id, e.g. gpt-5.4 for
       smarter (slower, pricier) tool use. (Hidden by default.)
+  live_backend_reasoning_effort:
+    name: "🗣️ Model & voice · Live backend reasoning effort"
+    description: >-
+      Only used with Model gpt-live-1: how much the backend model thinks
+      before it answers or calls a tool. low (default) is quick and still
+      picks tools reliably; none or minimal are faster, medium/high are
+      slower but more careful; default leaves it to OpenAI. (Hidden by
+      default.)
+  live_backend_verbosity:
+    name: "🗣️ Model & voice · Live backend verbosity"
+    description: >-
+      Only used with Model gpt-live-1: how long the backend's answers are
+      (low, medium or high; sent as text.verbosity). Leave empty to use the
+      OpenAI default. (Hidden by default.)
+  live_builtin_web_search:
+    name: "🗣️ Model & voice · Live built-in web search"
+    description: >-
+      Only used with Model gpt-live-1 and Web search on: let the backend model
+      search the web itself with OpenAI's built-in web_search tool (default
+      on, faster) instead of the add-on's own web_search function. Turn off to
+      use the same web_search call as gpt-realtime (Web search model applies).
   openai_voice:
     name: "🗣️ Model & voice · Voice"
     description: >-

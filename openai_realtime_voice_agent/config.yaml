@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent
-version: "0.17.0-live.2"
+version: "0.17.0-live.3"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/TristanBrotherton/voicepe-realtime
@@ -162,6 +162,13 @@ schema:
   # GPT-Live-1 only: the Responses model the live model delegates tools and
   # reasoning to. Optional, no default (hidden) -> main.py default gpt-5.4-mini.
   live_backend_model: str?
+  # GPT-Live-1 only, hidden: backend `reasoning.effort` (main.py default low;
+  # none|minimal|low|medium|high|default), `text.verbosity` (unset unless
+  # given), and whether the backend gets the Responses built-in web_search
+  # tool instead of the add-on's function tool (main.py default true).
+  live_backend_reasoning_effort: str?
+  live_backend_verbosity: str?
+  live_builtin_web_search: bool?
   openai_voice: "list(marin|cedar|alloy|ash|ballad|coral|echo|sage|shimmer|verse|custom)"
   openai_voice_custom: str?
   openai_speed: float(0.25,1.5)

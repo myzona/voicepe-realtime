@@ -82,6 +82,9 @@ option has plain-language inline help.
 |---|---|---|
 | `openai_model` | `gpt-realtime-2` | newest speech-to-speech model; `gpt-live-1` = OpenAI's full-duplex GPT-Live (see 4a) |
 | `live_backend_model` | `gpt-5.4-mini` | GPT-Live only, hidden: the Responses model that runs tools/reasoning |
+| `live_backend_reasoning_effort` | `low` | GPT-Live only, hidden: backend `reasoning.effort` (`none`/`minimal` faster, `medium`/`high` slower, `default` = OpenAI's) |
+| `live_backend_verbosity` | *(unset)* | GPT-Live only, hidden: backend `text.verbosity` (`low`/`medium`/`high`); not sent when empty |
+| `live_builtin_web_search` | `true` | GPT-Live only, hidden: the backend searches with OpenAI's built-in `web_search` tool instead of the add-on's function |
 | `openai_voice` | `marin` | `marin`/`cedar` are the newest voices |
 | `transcription_language` | *(blank)* | set your ISO code (e.g. `nl`): locks the language + logs the user transcript |
 | `instructions` | *(English default)* | the system prompt; swap the LANGUAGE line for your language |
@@ -123,8 +126,30 @@ Differences from gpt-realtime:
   `server_vad` fields, `openai_speed`, `max_output_tokens`, `noise_reduction`,
   `transcription_model` / `transcription_language` (GPT-Live always transcribes
   both sides; the 🗣️ transcript lines are always in the log).
+- **Tools and prompts**: the backend model gets your `instructions` behind a
+  short preamble with explicit tool rules (time/date → the `GetDateTime` tool,
+  device state → Home Assistant tools, current facts → web search, never
+  guess); the live model gets a delegation rule (it never answers time,
+  weather, news or device questions itself) and is told not to hum or fill
+  the pause while the backend works. Web search runs inside the backend with
+  OpenAI's built-in `web_search` tool (`live_builtin_web_search`, default on —
+  `web_search_model` is then unused); if the API rejects it the add-on falls
+  back to its own `web_search` function once and restarts the session.
+- **Latency knobs**: `live_backend_reasoning_effort` (default `low`; `none` /
+  `minimal` are faster, `default` leaves it to OpenAI) and, optionally,
+  `live_backend_verbosity` (`low` for shorter backend answers). A cheaper /
+  faster backend can be set with `live_backend_model` (e.g. `gpt-5.4-nano`).
+  Each reply logs one `⏱️ live turn:` line with the stage timings (user
+  speech end → delegation → tool call → tool result → first audio).
+- **Half-duplex device, full-duplex model**: the GPT-Live model only runs
+  while it receives audio, and the Voice PE stops streaming its mic while a
+  reply plays. The add-on therefore feeds silence to the session while a turn
+  is still in flight and the mic is gated (`🔇 input clock` log lines) so a
+  tool result is spoken immediately instead of waiting for the mic to re-open.
+  No silence is fed while the room is idle.
 - **Billing**: GPT-Live is billed per second of session audio (logged as
-  `💰 live usage`), plus the backend model's tokens.
+  `💰 live usage`, once per change), plus the backend model's tokens. The
+  input-clock silence counts as session audio (about 10 s per turn).
 - Sessions expire after about an hour; the add-on refreshes them in the
   background while the room is quiet, same as the 60-minute Realtime cap.
 

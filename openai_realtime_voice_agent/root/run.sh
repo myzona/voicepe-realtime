@@ -110,6 +110,18 @@ if bashio::config.has_value 'live_backend_model'; then
     LIVE_BACKEND_MODEL=$(bashio::config 'live_backend_model')
     export LIVE_BACKEND_MODEL
 fi
+if bashio::config.has_value 'live_backend_reasoning_effort'; then
+    LIVE_BACKEND_REASONING_EFFORT=$(bashio::config 'live_backend_reasoning_effort')
+    export LIVE_BACKEND_REASONING_EFFORT
+fi
+if bashio::config.has_value 'live_backend_verbosity'; then
+    LIVE_BACKEND_VERBOSITY=$(bashio::config 'live_backend_verbosity')
+    export LIVE_BACKEND_VERBOSITY
+fi
+if bashio::config.has_value 'live_builtin_web_search'; then
+    LIVE_BUILTIN_WEB_SEARCH=$(bashio::config 'live_builtin_web_search')
+    export LIVE_BUILTIN_WEB_SEARCH
+fi
 if bashio::config.has_value 'openai_voice_custom'; then
     OPENAI_VOICE_CUSTOM=$(bashio::config 'openai_voice_custom')
     export OPENAI_VOICE_CUSTOM

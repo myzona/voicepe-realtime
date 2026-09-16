@@ -56,6 +56,27 @@ configuration:
       achter de live stem de smart-home-tools en het redeneren doet
       (standaard gpt-5.4-mini). Elk Responses-model-id, bijv. gpt-5.4 voor
       slimmer (trager, duurder) toolgebruik. (Standaard verborgen.)
+  live_backend_reasoning_effort:
+    name: "🗣️ Model & stem · Live backend redeneer-inspanning"
+    description: >-
+      Alleen gebruikt met Model gpt-live-1: hoeveel het backend-model nadenkt
+      voordat het antwoordt of een tool aanroept. low (standaard) is snel en
+      kiest tools nog betrouwbaar; none of minimal zijn sneller, medium/high
+      trager maar zorgvuldiger; default laat het aan OpenAI. (Standaard
+      verborgen.)
+  live_backend_verbosity:
+    name: "🗣️ Model & stem · Live backend uitgebreidheid"
+    description: >-
+      Alleen gebruikt met Model gpt-live-1: hoe lang de antwoorden van de
+      backend zijn (low, medium of high; verstuurd als text.verbosity). Leeg
+      laten voor de OpenAI-standaard. (Standaard verborgen.)
+  live_builtin_web_search:
+    name: "🗣️ Model & stem · Live ingebouwde webzoekfunctie"
+    description: >-
+      Alleen gebruikt met Model gpt-live-1 en Webzoeken aan: laat het
+      backend-model zelf zoeken met de ingebouwde web_search-tool van OpenAI
+      (standaard aan, sneller) in plaats van de eigen web_search-functie van
+      de add-on. Zet uit voor dezelfde web_search-aanroep als gpt-realtime.
   openai_voice:
     name: "🗣️ Model & stem · Stem"
     description: >-
