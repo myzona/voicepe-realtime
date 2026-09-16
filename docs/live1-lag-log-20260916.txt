@@ -1,0 +1,100 @@
+2026-09-16 10:23:29.871 | DEBUG    | pipecat.transports.base_output:_bot_started_speaking:707 - Bot started speaking
+2026-09-16 10:23:29,871 - app.phase_emitter - INFO - ð phase -> replying
+2026-09-16 10:23:30,749 - app.transcript_logger - INFO - ð¤ assistant: One second.
+2026-09-16 10:23:31.067 | DEBUG    | pipecat.transports.base_output:_bot_stopped_speaking:759 - Bot stopped speaking
+2026-09-16 10:23:31.168 | DEBUG    | pipecat.transports.base_output:_bot_started_speaking:707 - Bot started speaking
+2026-09-16 10:23:32,737 - app.transcript_logger - INFO - ð¤ assistant: It's 70 degrees upstairs.
+2026-09-16 10:23:33.100 | DEBUG    | pipecat.transports.base_output:_bot_stopped_speaking:759 - Bot stopped speaking
+2026-09-16 10:23:34,601 - app.phase_emitter - INFO - ð phase -> idle
+2026-09-16 10:23:34,733 - app.live_service - INFO - ð° live usage: 70s of session audio (cumulative)
+2026-09-16 10:23:36,678 - app.phase_emitter - INFO - ð phase -> listening
+2026-09-16 10:23:38,668 - app.transcript_logger - INFO - ð£ï¸ user: temperature outside in Pleasant Hill
+2026-09-16 10:23:38,668 - app.phase_emitter - INFO - ð phase -> thinking
+2026-09-16 10:23:38,684 - app.phase_emitter - INFO - ð phase -> listening
+2026-09-16 10:23:39.345 | DEBUG    | pipecat.services.openai.live.llm:_handle_evt_delegation_created:926 - SafeLiveLLMService#0: delegation item_EOne7uB6VOrZ5rDSZaXlg created (target=responses)
+2026-09-16 10:23:39,485 - app.transcript_logger - INFO - ð£ï¸ user: , California
+2026-09-16 10:23:39,485 - app.phase_emitter - INFO - ð phase -> thinking
+2026-09-16 10:23:39.935 | DEBUG    | pipecat.transports.base_output:_bot_started_speaking:707 - Bot started speaking
+2026-09-16 10:23:39,935 - app.phase_emitter - INFO - ð phase -> replying
+2026-09-16 10:23:40,749 - app.transcript_logger - INFO - ð¤ assistant: [hum]
+2026-09-16 10:23:40.800 | DEBUG    | pipecat.services.llm_service:_run_function_call:1616 - SafeLiveLLMService#0 Calling function [web_search:call_G98eU2NydVMHHyggir8t3Ycn] with arguments {'query': 'current temperature in Pleasant Hill California'}
+2026-09-16 10:23:40,801 - app.web_search_tool - INFO - ð web_search called: 'current temperature in Pleasant Hill California' (model=gpt-5.5)
+2026-09-16 10:23:41.703 | DEBUG    | pipecat.processors.aggregators.llm_response_universal:_handle_function_calls_started:1842 - RealtimeAssistantAggregator#0 FunctionCallsStartedFrame: ['web_search:call_G98eU2NydVMHHyggir8t3Ycn']
+2026-09-16 10:23:41.708 | DEBUG    | pipecat.processors.aggregators.llm_response_universal:_handle_function_call_in_progress:1847 - RealtimeAssistantAggregator#0 FunctionCallInProgressFrame: [web_search:call_G98eU2NydVMHHyggir8t3Ycn]
+2026-09-16 10:23:42.550 | DEBUG    | pipecat.transports.base_output:_bot_stopped_speaking:759 - Bot stopped speaking
+2026-09-16 10:23:44,051 - app.phase_emitter - INFO - ð phase -> thinking
+2026-09-16 10:23:45,053 - app.phase_emitter - INFO - â³ thinking-watchdog: 1 tool(s) running for 1s â waiting (no cap)
+2026-09-16 10:23:45,965 - httpx2 - INFO - HTTP Request: POST https://api.openai.com/v1/responses "HTTP/1.1 200 OK"
+2026-09-16 10:23:46,089 - app.web_search_tool - INFO - ð web_search answer: The current temperature in Pleasant Hill, California is 64 degrees Fahrenheit, or 18 degrees Celsius.
+2026-09-16 10:23:46.089 | DEBUG    | pipecat.services.openai.live.llm:_send_function_call_output:1137 - SafeLiveLLMService#0: sending function call output for call_G98eU2NydVMHHyggir8t3Ycn
+2026-09-16 10:23:46.089 | DEBUG    | pipecat.services.openai.live.llm:_maybe_continue_response:1109 - SafeLiveLLMService#0: continuing delegated work for item_EOne7uB6VOrZ5rDSZaXlg
+2026-09-16 10:23:46.090 | DEBUG    | pipecat.processors.aggregators.llm_response_universal:_handle_function_call_result:1883 - RealtimeAssistantAggregator#0 FunctionCallResultFrame: [web_search:call_G98eU2NydVMHHyggir8t3Ycn]
+2026-09-16 10:23:49,734 - app.live_service - INFO - ð° live usage: 78s of session audio (cumulative)
+2026-09-16 10:24:01,098 - app.phase_emitter - WARNING - â ï¸ thinking-watchdog: no model activity for 15s and no tool in flight â forcing idle to unstick the device
+2026-09-16 10:24:01,099 - app.phase_emitter - WARNING - ð forcing phase idle (thinking-watchdog)
+2026-09-16 10:24:01,099 - app.phase_emitter - INFO - ð phase -> idle
+2026-09-16 10:24:03.255 | DEBUG    | pipecat.transports.base_output:_bot_started_speaking:707 - Bot started speaking
+2026-09-16 10:24:03,255 - app.phase_emitter - INFO - ð phase -> replying
+2026-09-16 10:24:04,737 - app.live_service - INFO - ð° live usage: 80s of session audio (cumulative)
+2026-09-16 10:24:04,761 - app.transcript_logger - INFO - ð¤ assistant: It's 64 degrees in Pleasant Hill.
+2026-09-16 10:24:08.318 | DEBUG    | pipecat.transports.base_output:_bot_stopped_speaking:759 - Bot stopped speaking
+2026-09-16 10:24:09,819 - app.phase_emitter - INFO - ð phase -> idle
+2026-09-16 10:24:18,526 - app.raw_audio_serializer - INFO - ð§½ device mic flush received
+2026-09-16 10:24:18,526 - app.websocket_handler - INFO - ð§½ follow-up cut-off (GPT-Live: nothing to clear)
+2026-09-16 10:24:19,740 - app.live_service - INFO - ð° live usage: 91s of session audio (cumulative)
+2026-09-16 10:24:34,739 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:24:49,740 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:25:04,741 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:25:19,743 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:25:34,743 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:25:49,743 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:26:04,746 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:26:19,745 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:26:34,747 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:26:49,748 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:27:04,751 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:27:19,749 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:27:34,751 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:27:49,752 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:28:04,753 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:28:19,755 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:28:34,756 - app.live_service - INFO - ð° live usage: 94s of session audio (cumulative)
+2026-09-16 10:28:39.634 | DEBUG    | pipecat.processors.frame_processor:set_usable:354 - SafeLiveLLMService#0: no longer usable
+2026-09-16 10:28:39.634 | ERROR    | pipecat.processors.frame_processor:push_error_frame:1001 - SafeLiveLLMService#0 exception (/usr/local/lib/python3.11/dist-packages/websockets/asyncio/connection.py:317): Connection closed: no close frame received or sent
+2026-09-16 10:28:39.634 | ERROR    | pipecat.processors.frame_processor:push_error_frame:1001 - SafeLiveLLMService#0 error: live receive loop ended â connection closed
+2026-09-16 10:28:39,635 - app.websocket_handler - WARNING - â ï¸ turn ended on error, emitting idle to unstick device (Connection closed: no close frame received or sent)
+2026-09-16 10:28:39,635 - app.phase_emitter - WARNING - ð forcing phase idle (turn ended on error: Connection closed: no close frame received or sent)
+2026-09-16 10:28:39,635 - app.websocket_handler - WARNING - ð OpenAI session connection lost after 500s (live receive loop ended â connection closed) â reconnectingâ¦
+2026-09-16 10:28:39,635 - app.phase_emitter - WARNING - ð forcing phase idle (reconnect: live receive loop ended â connection closed)
+2026-09-16 10:28:39.635 | DEBUG    | pipecat.services.openai.live.llm:reset_conversation:434 - SafeLiveLLMService#0: resetting conversation
+2026-09-16 10:28:39.869 | DEBUG    | pipecat.adapters.services.open_ai_live_adapter:_to_input_items:153 - Skipping context message with no startup-history representation: role='assistant'
+2026-09-16 10:28:39.869 | DEBUG    | pipecat.adapters.services.open_ai_live_adapter:_to_input_items:153 - Skipping context message with no startup-history representation: role='tool'
+2026-09-16 10:28:39.869 | DEBUG    | pipecat.adapters.services.open_ai_live_adapter:_to_input_items:153 - Skipping context message with no startup-history representation: role='assistant'
+2026-09-16 10:28:39.869 | DEBUG    | pipecat.adapters.services.open_ai_live_adapter:_to_input_items:153 - Skipping context message with no startup-history representation: role='tool'
+2026-09-16 10:28:39.869 | DEBUG    | pipecat.adapters.services.open_ai_live_adapter:_to_input_items:153 - Skipping context message with no startup-history representation: role='assistant'
+2026-09-16 10:28:39.869 | DEBUG    | pipecat.adapters.services.open_ai_live_adapter:_to_input_items:153 - Skipping context message with no startup-history representation: role='tool'
+2026-09-16 10:28:39.869 | DEBUG    | pipecat.services.openai.live.llm:_send_session_config:547 - SafeLiveLLMService#0: starting session with 26 prior messages and responses delegation
+2026-09-16 10:28:39.870 | DEBUG    | pipecat.processors.frame_processor:set_usable:354 - SafeLiveLLMService#0: usable
+2026-09-16 10:28:39,870 - app.websocket_handler - INFO - â OpenAI session reconnected in 0.2s (gap the user may have heard)
+2026-09-16 10:28:40,763 - app.live_service - INFO - ð¢ Live session live_u7_EOnixp3oN6KnTeuMkIAUdi3tygb9L5Dq started (model=gpt-live-1, voice=cedar, expires in 120 min)
+2026-09-16 10:28:40.763 | INFO     | pipecat.services.openai.live.llm:_handle_evt_session_started:727 - SafeLiveLLMService#0: session live_u7_EOnixp3oN6KnTeuMkIAUdi3tygb9L5Dq started. The live model handles being interrupted by itself; no InterruptionFrame is broadcast, so tools run to completion regardless of cancel_on_interruption.
+2026-09-16 10:28:40.764 | DEBUG    | pipecat.adapters.services.open_ai_live_adapter:_to_input_items:153 - Skipping context message with no startup-history representation: role='assistant'
+2026-09-16 10:28:40.764 | DEBUG    | pipecat.adapters.services.open_ai_live_adapter:_to_input_items:153 - Skipping context message with no startup-history representation: role='tool'
+2026-09-16 10:28:40.764 | DEBUG    | pipecat.adapters.services.open_ai_live_adapter:_to_input_items:153 - Skipping context message with no startup-history representation: role='assistant'
+2026-09-16 10:28:40.764 | DEBUG    | pipecat.adapters.services.open_ai_live_adapter:_to_input_items:153 - Skipping context message with no startup-history representation: role='tool'
+2026-09-16 10:28:40.764 | DEBUG    | pipecat.adapters.services.open_ai_live_adapter:_to_input_items:153 - Skipping context message with no startup-history representation: role='assistant'
+2026-09-16 10:28:40.764 | DEBUG    | pipecat.adapters.services.open_ai_live_adapter:_to_input_items:153 - Skipping context message with no startup-history representation: role='tool'
+2026-09-16 10:28:55,069 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:29:10,069 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:29:25,072 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:29:40,074 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:29:55,075 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:30:10,076 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:30:25,077 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:30:40,077 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:30:55,079 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:31:10,079 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:31:25,079 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:31:40,084 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:31:55,083 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
+2026-09-16 10:32:10,085 - app.live_service - INFO - ð° live usage: 0s of session audio (cumulative)
