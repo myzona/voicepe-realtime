@@ -2,6 +2,29 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.17.0-live.1 (fork)
+
+- **pipecat 1.10 migration (prep for GPT-Live-1).** The add-on now runs on
+  pipecat-ai 1.10.0 (was 0.0.97). Behaviour on `gpt-realtime-2` is meant to be
+  identical; this release is the baseline for the upcoming GPT-Live-1 option
+  (see `docs/LIVE1-PORT-PLAN.md`, `docs/LIVE1-PHASE1-REPORT.md`).
+  - Session configuration sent to OpenAI (model, instructions, voice/speed,
+    turn detection, transcription, tool list) is byte-identical to 0.16.11;
+    pipecat's own default model changed to gpt-realtime-2.1 but the add-on
+    always sets the model explicitly.
+  - Device phase signalling (`listening`/`thinking`/`replying`/`idle`),
+    interruption handling and tool-call semantics are kept as before by
+    driving them from the realtime service itself rather than pipecat 1.x's
+    new aggregator-side turn controller (which would swallow or time out
+    turn events on this device's stop/flush paths).
+  - Home Assistant MCP tools: pipecat 1.x keeps one persistent MCP session
+    instead of a connection per call. The add-on reconnects and retries once
+    when that session is dead, so HA restarts no longer break device control
+    until the add-on restarts.
+  - Assistant transcript lines in the log are no longer duplicated (pipecat
+    1.x emits the reply text twice, as LLM text and TTS text).
+  - `httpx` is now an explicit dependency (openai 3.x no longer pulls it in).
+
 ## 0.16.11 (fork)
 
 - Fixed announcements immediately after a single Voice PE reconnect. The sole
