@@ -64,6 +64,7 @@ from app.gemini_live_service import (
     SafeGeminiLiveLLMService,
     model_supports_thinking_level,
     openai_tools_to_gemini,
+    strip_tool_messages,
 )
 from app.live_service import SafeLiveLLMService
 from app.main import Application, SafeRealtimeLLMService
@@ -532,6 +533,147 @@ class TestGeminiLivePipelineSmoke(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(connection.recovery)
         self.assertIsNone(connection.openai_service)
         self.assertIn("office", self.app.session_manager.context_caches)
+
+    # ---- review round 2: reconnect-seed ordering + connect-time failures --------
+
+    def test_strip_tool_messages_drops_only_plumbing(self):
+        context = LLMContext(messages=[
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call_1", "type": "function",
+                                "function": {"name": "llm__GetDateTime", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "12:41:19"},
+            {"role": "user", "content": "What time is it right now?"},
+            {"role": "assistant", "content": "It is twelve forty-one PM."},
+            {"role": "developer", "content": '{"type": "async_tool", "status": "finished"}'},
+        ])
+        stripped = strip_tool_messages(context)
+        self.assertEqual(
+            stripped.get_messages(),
+            [
+                {"role": "user", "content": "What time is it right now?"},
+                {"role": "assistant", "content": "It is twelve forty-one PM."},
+            ],
+        )
+        # The original context is untouched.
+        self.assertEqual(len(context.get_messages()), 5)
+
+    async def test_create_initial_response_strips_tool_call_messages_from_the_seed(self):
+        """Review round 2 (live HA VM test): a reconnect seed replayed tool
+        calls/results as mis-ordered text pseudo-messages ahead of the user
+        question that triggered them, which measurably confused the model.
+        Only user/assistant text should reach Gemini's seed; the live
+        context itself must be untouched afterward."""
+        connection = await self._make_connection(FakeWebSocket([]))
+        service = connection.openai_service
+        service._context = LLMContext(messages=[
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call_1", "type": "function",
+                                "function": {"name": "llm__GetDateTime", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "12:41:19"},
+            {"role": "user", "content": "What time is it right now?"},
+            {"role": "assistant", "content": "It is twelve forty-one PM."},
+        ])
+        service._session = AsyncMock()
+        seen = {}
+
+        async def fake_send_client_content(turns, turn_complete):
+            seen["turns"] = turns
+            seen["turn_complete"] = turn_complete
+
+        service._session.send_client_content = fake_send_client_content
+        await service._create_initial_response()
+
+        roles_texts = [(c.role, c.parts[0].text) for c in seen["turns"]]
+        self.assertEqual(
+            roles_texts,
+            [("user", "What time is it right now?"), ("model", "It is twelve forty-one PM.")],
+        )
+        # The live context (tool-call bookkeeping, future caching) is untouched.
+        self.assertEqual(len(service._context.get_messages()), 4)
+        self.assertTrue(service._ready_for_realtime_input)
+
+    async def test_handle_connect_failure_drops_stale_resumption_handle_and_retries(self):
+        """Review round 2 (live HA VM test): a resumed connect can fail
+        outright (observed: Google 1011 'Internal error encountered'), and
+        that must not leave the service permanently dead."""
+        connection = await self._make_connection(FakeWebSocket([]))
+        service = connection.openai_service
+        service._session_resumption_handle = "stale-handle"
+        reconnected = {}
+
+        async def fake_connect(session_resumption_handle=None):
+            reconnected["handle"] = session_resumption_handle
+
+        service._connect = fake_connect
+        await service._handle_connect_failure(RuntimeError("1011 Internal error encountered"))
+
+        self.assertIsNone(service._session_resumption_handle)
+        self.assertIn("handle", reconnected)
+        self.assertIsNone(reconnected["handle"])
+
+    async def test_handle_connect_failure_without_a_handle_still_retries(self):
+        connection = await self._make_connection(FakeWebSocket([]))
+        service = connection.openai_service
+        service._session_resumption_handle = None
+        reconnected = []
+
+        async def fake_connect(session_resumption_handle=None):
+            reconnected.append(session_resumption_handle)
+
+        service._connect = fake_connect
+        await service._handle_connect_failure(RuntimeError("some other connect error"))
+        self.assertEqual(reconnected, [None])
+
+    async def test_handle_connect_failure_gives_up_after_max_consecutive_failures(self):
+        connection = await self._make_connection(FakeWebSocket([]))
+        service = connection.openai_service
+        service._consecutive_failures = 2  # one more reaches MAX_CONSECUTIVE_FAILURES (3)
+        service._connect = AsyncMock()
+        errors = []
+        service.push_error = AsyncMock(side_effect=lambda error_msg=None, **kw: errors.append(error_msg))
+        await service._handle_connect_failure(RuntimeError("1011 Internal error encountered"))
+        service._connect.assert_not_awaited()
+        self.assertTrue(any("gemini live receive loop died" in (e or "") for e in errors), errors)
+
+    async def test_connection_task_handler_connect_failure_triggers_fallback(self):
+        """The failure happens establishing `async with ... connect(...)`
+        itself — before pipecat's own inner message-loop try/except would
+        ever run — so this proves the new OUTER try/except actually catches
+        it instead of letting it escape uncaught (the bug as observed live:
+        `_connection_task_handler unexpected exception`, service dead)."""
+        connection = await self._make_connection(FakeWebSocket([]))
+        service = connection.openai_service
+
+        class _FailingConnectCM:
+            async def __aenter__(self):
+                raise RuntimeError("1011 Internal error encountered")
+
+            async def __aexit__(self, *exc_info):
+                return False
+
+        class _FakeLive:
+            def connect(self, model, config):
+                return _FailingConnectCM()
+
+        class _FakeAio:
+            live = _FakeLive()
+
+        class _FakeClient:
+            aio = _FakeAio()
+
+        service._client = _FakeClient()
+        handled = {}
+
+        async def fake_handle_connect_failure(error):
+            handled["error"] = error
+
+        service._handle_connect_failure = fake_handle_connect_failure
+        await service._connection_task_handler(config=genai_types.LiveConnectConfig())
+        self.assertIn("1011", str(handled["error"]))
 
 
 if __name__ == "__main__":
