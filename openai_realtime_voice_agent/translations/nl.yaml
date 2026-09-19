@@ -8,8 +8,9 @@ configuration:
     description: >-
       Je persoonlijke OpenAI-sleutel (begint met sk-...). Maak er één aan op
       platform.openai.com → API keys, en zorg dat facturering is ingesteld.
-      Alles wat de assistent doet — luisteren, denken, praten, zoeken op
-      internet — loopt via deze sleutel.
+      Verplicht bij Provider "openai". Bij Provider "gemini" wordt hij alleen
+      gebruikt voor websearch (Gemini heeft geen ingebouwde zoekfunctie) —
+      laat leeg om websearch op dat pad uit te schakelen.
   instructions:
     name: "🔑 Basis · Persoonlijkheid (systeemprompt)"
     description: >-
@@ -31,6 +32,15 @@ configuration:
       verstond). Leeg = automatisch detecteren (geen transcript in het log).
 
   # --- 🗣️ Model & stem ---
+  llm_provider:
+    name: "🗣️ Model & stem · Provider"
+    description: >-
+      Welke spraak-naar-spraak-backend het apparaat aanstuurt. "openai"
+      (standaard) gebruikt de Model/Stem/Live-opties hieronder. "gemini"
+      gebruikt in plaats daarvan Google's Gemini Live (Gemini-model/stem/
+      denkniveau-opties verderop); de Live-1-only-opties en
+      beurtdetectie/tempo/ruisonderdrukking gelden er niet voor. Bestaande
+      installaties houden "openai" totdat je dit wijzigt.
   openai_model:
     name: "🗣️ Model & stem · Model"
     description: >-
@@ -104,6 +114,34 @@ configuration:
       Begrenst hoe lang een antwoord mag worden, in tokens (≈ 0,75 woord per
       stuk). 0 = geen limiet. Zet bijv. 1024 als hij soms blijft doorpraten;
       te laag kapt antwoorden midden in een zin af.
+  gemini_api_key:
+    name: "🗣️ Model & stem · Gemini API-sleutel"
+    description: >-
+      Alleen gebruikt met Provider "gemini". Je Google AI Studio /
+      Gemini-API-sleutel. Maak er één aan op aistudio.google.com → Get API
+      key.
+  gemini_model:
+    name: "🗣️ Model & stem · Gemini-model"
+    description: >-
+      Alleen gebruikt met Provider "gemini". gemini-3.8-live (standaard) is
+      Google's full-duplex live-model. Een "-extended-thinking"-variant (bijv.
+      gemini-3.8-live-extended-thinking) laat het nadenken voordat het
+      antwoordt, ten koste van een "moment, ik kijk het na"-vulling en enkele
+      extra seconden per antwoord — dan geldt het Gemini-denkniveau hieronder;
+      gewone gemini-3.8-live accepteert die instelling helemaal niet.
+  gemini_voice:
+    name: "🗣️ Model & stem · Gemini-stem"
+    description: >-
+      Alleen gebruikt met Provider "gemini". Elke vooraf gebouwde
+      Gemini-Live-stemnaam (standaard Charon). Zie Google's Gemini-API
+      stemlijst voor alternatieven.
+  gemini_thinking_level:
+    name: "🗣️ Model & stem · Gemini-denkniveau"
+    description: >-
+      Alleen gebruikt met een "-extended-thinking"-Gemini-model. low
+      (standaard) is snelst; medium/high denken langer na voordat ze
+      antwoorden of een tool aanroepen. Genegeerd (en niet verstuurd) bij een
+      gewoon, niet-denkend Gemini-model.
 
   # --- 💬 Gesprek ---
   follow_up_listen_seconds:

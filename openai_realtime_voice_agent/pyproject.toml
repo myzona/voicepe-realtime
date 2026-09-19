@@ -17,8 +17,10 @@ python = ">=3.11,<3.14"
 # internals, and SafeRealtimeLLMService against the realtime service source.
 # Extras: "mcp" = MCP client for the Home Assistant MCP Server tools;
 # "websocket" = FastAPI websocket transport; "openai" is empty in 1.x (the
-# openai SDK is a core dependency now) but kept for clarity.
-pipecat-ai = {extras = ["mcp", "openai", "websocket"], version = "1.10.0"}
+# openai SDK is a core dependency now) but kept for clarity. "google" pulls in
+# google-genai for GeminiLiveLLMService (app/gemini_live_service.py); it also
+# drags in google-cloud-speech/texttospeech, which we do not use.
+pipecat-ai = {extras = ["mcp", "openai", "websocket", "google"], version = "1.10.0"}
 # Used directly by app/ (timers, enrollment, ha_sensors, openclaw_tool). Up to
 # pipecat 0.0.97 it arrived transitively via the openai SDK; openai 3.x (pulled
 # in by pipecat 1.10) depends on httpx2 instead, so it must be explicit.

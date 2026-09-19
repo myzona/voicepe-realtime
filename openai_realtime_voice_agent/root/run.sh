@@ -2,7 +2,6 @@
 set -e
 
 # --- 🔑 Basics ---
-OPENAI_API_KEY=$(bashio::config 'openai_api_key')
 SPEAKER_MALE_NAME=$(bashio::config 'speaker_male_name')
 WAKE_SOUND_ENTITY=$(bashio::config 'wake_sound_entity')
 TIMER_RING_ENTITY=$(bashio::config 'timer_ring_entity')
@@ -16,10 +15,15 @@ INSTRUCTIONS=$(bashio::config 'instructions')
 TRANSCRIPTION_LANGUAGE=$(bashio::config 'transcription_language')
 
 # --- 🗣️ Model & voice ---
+LLM_PROVIDER=$(bashio::config 'llm_provider')
 OPENAI_MODEL=$(bashio::config 'openai_model')
 OPENAI_VOICE=$(bashio::config 'openai_voice')
 OPENAI_SPEED=$(bashio::config 'openai_speed')
 MAX_OUTPUT_TOKENS=$(bashio::config 'max_output_tokens')
+GEMINI_API_KEY=$(bashio::config 'gemini_api_key')
+GEMINI_MODEL=$(bashio::config 'gemini_model')
+GEMINI_VOICE=$(bashio::config 'gemini_voice')
+GEMINI_THINKING_LEVEL=$(bashio::config 'gemini_thinking_level')
 
 # --- 💬 Conversation ---
 FOLLOW_UP_LISTEN_SECONDS=$(bashio::config 'follow_up_listen_seconds')
