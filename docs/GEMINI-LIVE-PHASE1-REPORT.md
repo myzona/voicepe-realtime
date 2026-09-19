@@ -311,6 +311,95 @@ real file is clean.
 4. Flip one device's `llm_provider` to `gemini` per §5 above and work through the regression items
    below before considering it for the office puck full-time.
 
+## Review round 2 fixes (from Edward's live test on HA VM 140)
+
+Edward live-tested phase 1 as a separate slug (`local_gemini_live_voice_agent`) and found two real
+bugs plus a non-blocking latency observation. The latency observation (Gemini VAD end-of-speech
+sensitivity not tunable) and the `instance_name` hyphen/entity_id issue are **not fixed in this
+round** — only #1 and #2 below, per instruction.
+
+### Fix 1: a resumed connect can fail outright with no fallback (dead turn)
+
+**Observed live**, 12:42:55 PDT: a wedge-watchdog-triggered reconnect called `_connect` with the
+stored `session_resumption_handle`; Google closed the connection with `1011 Internal error
+encountered`; `_connection_task_handler unexpected exception` was logged and the service stayed
+dead until the device disconnected 18 s later — the user heard nothing.
+
+**Root cause**, found by re-reading `_connection_task_handler`: pipecat's own inner
+`try/except Exception` only wraps the message-receive loop (`turn = session.receive(); async for
+message in turn: ...`) — it does **not** wrap `async with self._client.aio.live.connect(...) as
+session:` itself. A failure establishing the connection (as opposed to a failure once connected)
+raises straight out of the `async with` statement, before the loop's `except` ever runs, and
+escapes `_connection_task_handler` entirely uncaught.
+
+**Fix**: `_connection_task_handler` (already duplicated for `goAway`, see §2) now wraps the whole
+`async with` block in an outer `try/except`, routing a connect-time failure to a new
+`_handle_connect_failure()`. That method drops `_session_resumption_handle` if one was in play
+(a handle Google just rejected will not succeed on an immediate retry) and re-enters through
+`_handle_connection_error()` — so `MAX_CONSECUTIVE_FAILURES` still applies and
+`ConnectionRecovery` still hears about it once pipecat's own retries are exhausted — then retries
+via `_connect()` directly (not `_reconnect()`, since no session/task ever came up to disconnect).
+
+### Fix 2: the reconnect seed replays tool calls as mis-ordered text, confusing the model
+
+**Observed live**: the 12-message seed logged at a reconnect (`Creating initial response: [...]`)
+interleaved tool call/result pairs BEFORE the user question that had triggered them, e.g.:
+
+```
+model: [Called function llm__GetDateTime with args {}]
+user:  [Function llm__GetDateTime returned "{...time: 12:41:19...}"]
+user:  What time is it right now?
+model: It is twelve forty-one PM.
+```
+
+**Root cause**: two independent, pre-existing behaviours compound here. (a) pipecat's
+`GeminiLiveLLMAdapter` renders a re-seeded tool call/result pair as literal descriptive TEXT turns
+(`_convert_tool_calls_to_text` — seeding a Gemini Live conversation with native function-call
+schema fails with a 1007, so pipecat substitutes text). (b) this add-on's realtime-mode context
+aggregator (`session_manager.py`'s `make_context_aggregator_pair`) writes the user's own
+transcript into the `LLMContext` only when the assistant response starts (the "realtime-mode
+handoff" documented there), while a tool call/result pair — per the `RealtimeAssistantAggregator`
+override — is pushed to context immediately as it happens. So by the time of a reconnect, a turn's
+tool call/result pair sits in the context BEFORE that turn's own user question, in raw insertion
+order. Gemini treats a re-seeded history as a literal chronological transcript, so a stale or
+misordered tool result (an old "current time") measurably confused it — and is the likely actual
+cause of Fix 1's stall (the reconnect that hit the 1011 was re-seeding from a context with 12 such
+messages).
+
+**Fix**: `SafeGeminiLiveLLMService._create_initial_response()` (called for every seed: first
+connect with cached history, and every reconnect) now swaps `self._context` for a copy with every
+tool-call/result pseudo-message stripped (`strip_tool_messages()`/`_is_tool_plumbing_message()`,
+new module-level helpers) for the duration of that one call, then restores the original — the live
+context (tool-call bookkeeping, future session caching) is never mutated. Only user/assistant
+spoken text reaches the Gemini seed; Gemini always re-runs a tool itself rather than trusting a
+stale cached result, so nothing of value is lost by not replaying the call/result pair.
+
+### Verification
+
+6 new tests in `tests/test_gemini_live_smoke.py` (46 total now; still 0 network, still real
+`google-genai`/pipecat `LLMContext` types):
+`test_strip_tool_messages_drops_only_plumbing`,
+`test_create_initial_response_strips_tool_call_messages_from_the_seed` (asserts the seed sent to
+`send_client_content` contains only the two text turns, and that the live context still has all 4
+original messages afterward), `test_handle_connect_failure_drops_stale_resumption_handle_and_retries`,
+`test_handle_connect_failure_without_a_handle_still_retries`,
+`test_handle_connect_failure_gives_up_after_max_consecutive_failures`, and
+`test_connection_task_handler_connect_failure_triggers_fallback` (constructs a fake
+`_client.aio.live.connect(...)` whose `__aenter__` raises, proving the new outer `try/except`
+actually catches a connect-time failure instead of letting it escape uncaught — the exact bug
+observed live).
+
+```
+cd openai_realtime_voice_agent && ../.venv/bin/python -m pytest -q tests
+46 passed, 1 warning in 7.77s
+
+PYTHONPATH=. ../.venv/bin/python -m unittest discover -s tests
+Ran 46 tests ... OK
+```
+
+**Not re-verified live** — no API key was used in this worktree for this round either; Edward's
+next live test on HA VM 140 is what will confirm the 1011/reseed sequence no longer stalls.
+
 ## 6. What was NOT verified (no live API call was made)
 
 - The optional live-smoke step in the brief (`tools/gemini_live_probe.py` against the real Gemini
