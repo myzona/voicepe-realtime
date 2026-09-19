@@ -18,7 +18,7 @@ from pipecat.audio.utils import create_stream_resampler
 from pipecat.services.openai.realtime import events as openai_rt_events
 
 from app.device_registry import DeviceConnection, DeviceRegistry, device_id_from_websocket
-from app.live_service import SafeLiveLLMService
+from app.live_mode import LiveModeService
 from app.multi_client_transport import MixedFastAPIWebsocketTransport
 from app.raw_audio_serializer import RawAudioSerializer
 from app.session_manager import SessionManager
@@ -515,10 +515,13 @@ class WebSocketHandler:
         # Create context aggregator with cached context if available
         context_aggregator = None
         context_initializer = None
-        # GPT-Live-1 vs gpt-realtime-*: the pipeline is identical; only the
-        # device-event → OpenAI-event mapping below differs (Live has no input
-        # buffer to clear, no response.cancel and no conversation items).
-        live_mode = isinstance(openai_service, SafeLiveLLMService)
+        # GPT-Live-1 / Gemini Live vs gpt-realtime-*: the pipeline is
+        # identical; only the device-event → provider-event mapping below
+        # differs (a live-style service has no input buffer to clear, no
+        # response.cancel and no conversation items). LiveModeService (see
+        # app/live_mode.py) is a marker mixin both live services inherit, so
+        # this check does not grow a new isinstance per provider.
+        live_mode = isinstance(openai_service, LiveModeService)
         if self.session_manager:
             context_aggregator = self.session_manager.create_context_aggregator(client_id)
             if live_mode:

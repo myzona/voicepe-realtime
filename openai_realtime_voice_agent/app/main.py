@@ -8,6 +8,12 @@ import dotenv
 from pipecat.frames.frames import UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 from app.mcp_service import HomeAssistantMCPService
+from app.gemini_live_service import (
+    SafeGeminiLiveLLMService,
+    model_supports_thinking_level,
+    openai_tools_to_gemini,
+)
+from app.live_mode import LiveModeService
 from app.live_service import (
     DEFAULT_BACKEND_REASONING_EFFORT,
     SafeLiveLLMService,
@@ -461,6 +467,33 @@ class Application:
                 f"noise reduction and transcription settings do not apply)"
             )
 
+        # Provider switch: openai (gpt-realtime-*/gpt-live-1, above) or gemini
+        # (Gemini Live). Existing installs have no llm_provider saved yet ->
+        # default openai, unaffected.
+        llm_provider = os.environ.get("LLM_PROVIDER", "openai").strip().lower()
+        if llm_provider not in ("openai", "gemini"):
+            logger.warning(f"⚠️ Unknown LLM_PROVIDER '{llm_provider}', falling back to openai")
+            llm_provider = "openai"
+        gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        gemini_model = os.environ.get("GEMINI_MODEL", "").strip() or "gemini-3.8-live"
+        gemini_voice = os.environ.get("GEMINI_VOICE", "").strip() or "Charon"
+        gemini_thinking_level = os.environ.get("GEMINI_THINKING_LEVEL", "low").strip().lower()
+        if gemini_thinking_level not in ("low", "medium", "high"):
+            logger.warning(f"⚠️ Unknown GEMINI_THINKING_LEVEL '{gemini_thinking_level}', falling back to low")
+            gemini_thinking_level = "low"
+        if llm_provider == "gemini":
+            logger.info(
+                f"🔮 Gemini Live mode: model={gemini_model}, voice={gemini_voice}"
+                + (
+                    f", thinking_level={gemini_thinking_level}"
+                    if model_supports_thinking_level(gemini_model)
+                    else ""
+                )
+                + " (turn detection, speed, max_output_tokens, noise reduction, "
+                "transcription settings and the gpt-live-1/live_backend_* options "
+                "do not apply)"
+            )
+
         # Playback speed (post-generation rate): 0.25-1.5, 1.0 = normal. Clamped.
         try:
             openai_speed = float(os.environ.get("OPENAI_SPEED", "1.0"))
@@ -566,9 +599,24 @@ class Application:
             f"max restored messages: {max_context_messages or 'unlimited'}"
         )
         
-        if not openai_api_key:
+        if llm_provider == "openai" and not openai_api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
-        
+        if llm_provider == "gemini":
+            if not gemini_api_key:
+                raise ValueError("GEMINI_API_KEY environment variable is required when llm_provider is gemini")
+            # web_search always calls OpenAI's Responses API (see
+            # web_search_tool.py) regardless of the conversational provider;
+            # Gemini has no equivalent built-in tool we call instead. The
+            # honest behaviour is to disable it, loudly, rather than fail
+            # startup over a tool that isn't the reason someone picked Gemini.
+            if enable_web_search and not openai_api_key:
+                logger.warning(
+                    "⚠️ llm_provider is gemini and openai_api_key is blank — "
+                    "disabling web_search (it calls OpenAI's Responses API "
+                    "regardless of the conversational provider)"
+                )
+                enable_web_search = False
+
         # Initialize Home Assistant MCP Service
         mcp_client = None
         try:
@@ -749,6 +797,11 @@ class Application:
         self.transcription_language = transcription_language
         self.transcription_model = transcription_model
         self.instructions = instructions
+        self.llm_provider = llm_provider
+        self.gemini_api_key = gemini_api_key
+        self.gemini_model = gemini_model
+        self.gemini_voice = gemini_voice
+        self.gemini_thinking_level = gemini_thinking_level
         self.model = openai_model
         self.voice = openai_voice
         self.live_backend_model = live_backend_model
@@ -880,7 +933,14 @@ class Application:
             
             logger.info(f"🔧 Creating session with {len(all_tools)} tools: {[tool.get('name', 'unknown') for tool in all_tools]}")
 
-            if is_live_model(self.model):
+            # getattr default: test_pipeline_smoke.py's configure() builds an
+            # Application() and sets attributes individually without calling
+            # initialize(), so it never sets llm_provider — must still mean
+            # "openai" (its whole point is pinning the openai/gpt-realtime-2
+            # payload byte-for-byte).
+            if getattr(self, "llm_provider", "openai") == "gemini":
+                service = self._build_gemini_service(all_tools)
+            elif is_live_model(self.model):
                 service = self._build_live_service(all_tools)
             else:
                 service = self._build_realtime_service(all_tools)
@@ -1004,6 +1064,45 @@ class Application:
             f"backend={self.live_backend_model} reasoning={self.live_backend_reasoning_effort or 'default'} "
             f"({len(all_tools)} function tools, web_search="
             f"{'built-in' if service.hosted_web_search_active() else 'function tool'})"
+        )
+        return service
+
+    def _build_gemini_service(self, all_tools):
+        """Build the Gemini Live service (pipecat GeminiLiveLLMService).
+
+        Unlike gpt-live-1, Gemini is not a delegation architecture — it calls
+        the registered tools itself, so `instructions` (+ household memory
+        notes) reach it exactly as they do the Realtime path; no delegation/
+        no-filler rewrite (see gemini_live_service.py's module docstring for
+        why `live_instructions()` was deliberately not reused).
+        `inference_on_context_initialization=False` stops pipecat from
+        seeding a spontaneous greeting on a brand-new session (see
+        gemini_live_service.py) — the Gemini equivalent of
+        `Application._preseed_context` for the Realtime path, which does not
+        apply here (`_preseed_context` skips every `LiveModeService`).
+        """
+        instructions = self.instructions + memory_instructions()
+        settings_kwargs = dict(
+            model=self.gemini_model,
+            voice=self.gemini_voice,
+            system_instruction=instructions,
+        )
+        if model_supports_thinking_level(self.gemini_model):
+            settings_kwargs["thinking"] = {"thinking_level": self.gemini_thinking_level}
+        service = SafeGeminiLiveLLMService(
+            api_key=self.gemini_api_key,
+            settings=SafeGeminiLiveLLMService.Settings(**settings_kwargs),
+            tools=openai_tools_to_gemini(all_tools),
+            inference_on_context_initialization=False,
+        )
+        logger.info(
+            f"🔮 Gemini Live session: model={self.gemini_model}, voice={self.gemini_voice}"
+            + (
+                f", thinking_level={self.gemini_thinking_level}"
+                if model_supports_thinking_level(self.gemini_model)
+                else ""
+            )
+            + f" ({len(all_tools)} tools)"
         )
         return service
 
@@ -1145,9 +1244,10 @@ class Application:
         Args:
             service: The freshly created service.
         """
-        if isinstance(service, SafeLiveLLMService):
-            # Live starts its session FROM the aggregator pair's context (see
-            # SafeLiveLLMService.set_bootstrap_context); pre-seeding an empty
+        if isinstance(service, LiveModeService):
+            # Every live-style service (GPT-Live-1, Gemini Live) starts its
+            # session FROM the aggregator pair's context (see
+            # set_bootstrap_context on each service); pre-seeding an empty
             # one here would make it start with no history.
             return
         if not (self.turn_detection_type == "semantic_vad" and self.semantic_vad_create_response):
