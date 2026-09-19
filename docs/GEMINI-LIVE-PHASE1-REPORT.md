@@ -323,4 +323,8 @@ Gemini.
 
 ## Commits
 
-`<fill in after the final commit is made — see `git log --oneline origin/live1-port..HEAD``>
+`8b63360` gemini: llm_provider option, google extra, run.sh plumbing ·
+`1329666` gemini: SafeGeminiLiveLLMService + shared live-mode marker mixin ·
+`65cf8d7` gemini: wire the provider branch into main.py and websocket_handler ·
+`573cc80` tests: no-network smoke tests for the Gemini Live path ·
+this commit: docs: gemini live phase-1 report + brief, changelog, configuration docs.
