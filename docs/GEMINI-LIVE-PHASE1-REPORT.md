@@ -255,6 +255,40 @@ Gemini.
       the same 13-processor topology with `SafeGeminiLiveLLMService` in the Realtime slot, no
       `RTVIProcessor`, `hello`/`pong` handshake, clean teardown, context cached for session reuse.
 
+### `root/run.sh` verification (review round 1 fix)
+
+`root/run.sh` is shell plumbing between the HA Supervisor's config UI and the Python process; none
+of the 40 tests above can see it (they set `Application` attributes directly, bypassing `run.sh`
+and `os.environ` entirely). Review round 1 caught two real bugs here that shipped in the phase-1
+commit: `OPENAI_API_KEY=$(bashio::config 'openai_api_key')` had been dropped from the Basics block
+while the `if [ -z "$OPENAI_API_KEY" ]; then exit 1; fi` check stayed — meaning the add-on would
+exit 1 on startup for **every** install, both providers, since the variable was now always empty
+— and `LLM_PROVIDER`/`GEMINI_API_KEY`/`GEMINI_MODEL`/`GEMINI_VOICE`/`GEMINI_THINKING_LEVEL` were
+read via `bashio::config` but never `export`ed, so `main.py` would never see them and the Gemini
+path was unreachable in a real image regardless of the option UI. Both are fixed: the key read is
+restored in place, the required-key check is now provider-aware (mirrors `main.py`'s own check,
+keeping the exact `"OPENAI_API_KEY is required but not set"` log text people grep for), and all
+five are exported.
+
+Proved by running the real `run.sh` (not a rewritten copy) through a minimal `bashio` stub
+(`bashio::config KEY` → `$CFG_<KEY>` uppercased, `bashio::config.has_value` checks the same, empty
+by default) with `bash -n` first, then swapping the shebang for a plain `#!/bin/bash` + `source`
+of the stub and replacing the final `exec python3 -m app.main` with a dump of the relevant
+exported variable *names* (values never printed):
+
+```
+case A: openai, key set        -> OPENAI_API_KEY=<set>, LLM_PROVIDER=<set>, GEMINI_*=<set/empty>, exit=0
+case B: openai, key blank      -> "ERROR: OPENAI_API_KEY is required but not set", exit=1
+case C: gemini, gemini key set, openai blank -> LLM_PROVIDER/GEMINI_* exported, exit=0
+case D: gemini, gemini key blank             -> "ERROR: gemini_api_key is required when llm_provider is gemini", exit=1
+```
+
+All four matched the required behaviour (default/openai install still starts with just an OpenAI
+key; a blank required key for the *selected* provider fails loudly with a clear message; the
+Gemini-only case no longer needs an OpenAI key to pass validation; every one of the five
+provider-related variables reaches the Python process's environment). `bash -n root/run.sh` on the
+real file is clean.
+
 ## 5. How to flip a device to Gemini (options UI)
 
 1. Set **`llm_provider`** to `gemini`.
