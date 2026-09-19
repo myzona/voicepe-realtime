@@ -129,8 +129,9 @@ from pipecat.frames.frames import (
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
+from pipecat.processors.aggregators.llm_context import LLMContext, LLMSpecificMessage
 from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
-from pipecat.utils.types import assert_given
+from pipecat.utils.types import NOT_GIVEN, assert_given
 
 from google.genai.types import Blob, Content, Part
 
@@ -201,6 +202,45 @@ def openai_tools_to_gemini(tool_dicts: list) -> ToolsSchema:
     return ToolsSchema(standard_tools=functions)
 
 
+# Roles that exist only to carry tool-call plumbing in the universal
+# (OpenAI-shaped) LLMContext message format: "tool" for a result (both a
+# plain synchronous result and our own async-tool "started" placeholder —
+# every tool here is registered cancel_on_interruption=False, see
+# register_function below), "developer" for an async-tool intermediate/final
+# result envelope (see pipecat.processors.aggregators.async_tool_messages).
+# See _create_initial_response's docstring for why these are stripped from
+# the Gemini reconnect seed specifically.
+_TOOL_NOISE_ROLES = {"tool", "developer"}
+
+
+def _is_tool_plumbing_message(message) -> bool:
+    """True for a universal-context message that is tool-call/result plumbing."""
+    if isinstance(message, LLMSpecificMessage) or not isinstance(message, dict):
+        return False
+    role = message.get("role")
+    if role in _TOOL_NOISE_ROLES:
+        return True
+    # An assistant message that IS a function call (OpenAI-shaped: a
+    # "tool_calls" list, no spoken content) rather than something the model
+    # actually said.
+    return role == "assistant" and bool(message.get("tool_calls")) and not message.get("content")
+
+
+def strip_tool_messages(context: LLMContext) -> LLMContext:
+    """A copy of `context` with every tool-call/result pseudo-message removed.
+
+    Used only to build the message list Gemini is seeded with on connect/
+    reconnect (see `_create_initial_response`) — never mutates the live
+    `context` itself, which the rest of the pipeline (tool-call bookkeeping,
+    future session caching) keeps using unchanged.
+    """
+    messages = context.get_messages() if hasattr(context, "get_messages") else []
+    kept = [m for m in messages if not _is_tool_plumbing_message(m)]
+    tools = getattr(context, "tools", NOT_GIVEN)
+    tool_choice = getattr(context, "tool_choice", NOT_GIVEN)
+    return LLMContext(messages=kept, tools=tools, tool_choice=tool_choice)
+
+
 class SafeGeminiLiveLLMService(LiveModeService, GeminiLiveLLMService):
     """GeminiLiveLLMService adapted to the Voice PE add-on (see module docstring)."""
 
@@ -253,6 +293,41 @@ class SafeGeminiLiveLLMService(LiveModeService, GeminiLiveLLMService):
             # inference_on_context_initialization=False in
             # main.py::_build_gemini_service).
             await self._handle_context(self._bootstrap_context)
+
+    async def _create_initial_response(self, for_reconnect: bool = False):  # type: ignore[override]
+        """Seed Gemini with `self._context` with tool-call/result plumbing
+        stripped out (review round 2, verified live on the HA VM).
+
+        pipecat's `GeminiLiveLLMAdapter` renders a re-seeded tool call/result
+        pair as literal text turns ("[Called function X ...]" /
+        "[Function X returned ...]"), and this add-on's realtime-mode
+        context aggregator writes the user's own transcript into context
+        LATE — only when the assistant response starts (see
+        `session_manager.py`'s `make_context_aggregator_pair` docstring) —
+        while tool-call/result messages are appended immediately as they
+        happen. So by the time of a reconnect, a turn's tool call/result
+        pair is ordered in the context BEFORE that turn's own user question:
+        Gemini takes the seed as a literal chronological transcript, so a
+        stale or misordered tool result (observed live: an old "current
+        time" from a previous turn) measurably confuses it. Only user/
+        assistant spoken-text messages carry real conversational signal for
+        a Gemini reconnect seed — the tool-call bookkeeping they'd otherwise
+        replay is not something Gemini can use anyway (it always re-runs a
+        tool itself rather than trusting a stale cached result).
+
+        `self._context` is swapped only for the duration of this call — the
+        live context (tool-call bookkeeping via `_process_completed_function_calls`,
+        future session caching in `session_manager.py`) is untouched.
+        """
+        if self._context is None:
+            await super()._create_initial_response(for_reconnect=for_reconnect)
+            return
+        original_context = self._context
+        self._context = strip_tool_messages(original_context)
+        try:
+            await super()._create_initial_response(for_reconnect=for_reconnect)
+        finally:
+            self._context = original_context
 
     # ---- tools ----------------------------------------------------------------
 
@@ -531,64 +606,108 @@ class SafeGeminiLiveLLMService(LiveModeService, GeminiLiveLLMService):
     async def _connection_task_handler(self, config):  # type: ignore[override]
         """Identical to pipecat's `GeminiLiveLLMService._connection_task_handler`
         (pipecat-ai 1.10.0, `pipecat/services/google/gemini_live/llm.py`) with
-        ONE addition: a `message.go_away` branch. pipecat has no handler for
-        this message anywhere (confirmed by grepping the installed package)
-        and the whole receive loop is a single method with no smaller seam to
-        hook, so this duplicates it rather than patching one branch. Re-diff
-        against the installed pipecat-ai source on any version bump — see
-        pyproject.toml's pipecat-ai pin comment for the same rule applied to
-        the rest of this add-on.
+        TWO additions: a `message.go_away` branch, and an outer try/except
+        around the whole `async with ... connect(...)` block.
+
+        pipecat has no handler for `goAway` anywhere (confirmed by grepping
+        the installed package) and the whole receive loop is a single method
+        with no smaller seam to hook, so this duplicates it rather than
+        patching one branch. Re-diff against the installed pipecat-ai source
+        on any version bump — see pyproject.toml's pipecat-ai pin comment for
+        the same rule applied to the rest of this add-on.
+
+        The outer try/except fixes a review-round-2 finding (verified live on
+        the HA VM): pipecat's inner `try/except` only covers the message
+        loop, not establishing the connection itself. A RESUMED connect can
+        fail outright — observed live: Google closed with `1011 Internal
+        error encountered` while resuming with a session_resumption_handle —
+        and that exception is raised by the `async with` statement, before
+        the loop (and its except) ever starts. Uncaught, it escaped this
+        method entirely (logged generically by pipecat's task wrapper as
+        "unexpected exception") and left the service permanently dead: no
+        retry, no ConnectionRecovery marker, nothing. `_handle_connect_failure`
+        (below) is the outer except's handler.
         """
         model = assert_given(self._settings.model)
         if model is None:
             raise ValueError("Gemini Live model must be specified")
-        async with self._client.aio.live.connect(model=model, config=config) as session:
-            logger.info("Connected to Gemini service")
-            self._connection_start_time = time.time()
-            await self._handle_session_ready(session)
+        try:
+            async with self._client.aio.live.connect(model=model, config=config) as session:
+                logger.info("Connected to Gemini service")
+                self._connection_start_time = time.time()
+                await self._handle_session_ready(session)
 
-            while True:
-                try:
-                    turn = session.receive()
-                    async for message in turn:
-                        self._check_and_reset_failure_counter()
+                while True:
+                    try:
+                        turn = session.receive()
+                        async for message in turn:
+                            self._check_and_reset_failure_counter()
 
-                        sc = message.server_content
-                        if sc and sc.interrupted:
-                            logger.debug("Gemini VAD: interrupted signal received")
-                            await self.broadcast_interruption()
-                        if sc and sc.model_turn:
-                            await self._handle_msg_model_turn(message)
-                        if sc and sc.input_transcription:
-                            await self._handle_msg_input_transcription(message)
-                        if sc and sc.output_transcription:
-                            await self._handle_msg_output_transcription(message)
-                        if (
-                            sc
-                            and sc.grounding_metadata
-                            and not sc.model_turn
-                            and not sc.output_transcription
-                        ):
-                            await self._handle_msg_grounding_metadata(message)
-                        if sc and sc.turn_complete:
-                            if not message.usage_metadata:
-                                logger.warning("Received turn_complete without usage_metadata")
-                            await self._handle_msg_turn_complete(message)
-                            if message.usage_metadata:
-                                await self._handle_msg_usage_metadata(message)
-                        if message.tool_call:
-                            await self._handle_msg_tool_call(message)
-                        if message.session_resumption_update:
-                            self._handle_msg_resumption_update(message)
-                        if message.go_away:
-                            self._handle_go_away(message.go_away)
-                except Exception as e:
-                    if not self._disconnecting:
-                        should_reconnect = await self._handle_connection_error(e)
-                        if should_reconnect:
-                            await self._reconnect()
-                            return  # Exit this connection handler, _reconnect will start a new one
-                    break
+                            sc = message.server_content
+                            if sc and sc.interrupted:
+                                logger.debug("Gemini VAD: interrupted signal received")
+                                await self.broadcast_interruption()
+                            if sc and sc.model_turn:
+                                await self._handle_msg_model_turn(message)
+                            if sc and sc.input_transcription:
+                                await self._handle_msg_input_transcription(message)
+                            if sc and sc.output_transcription:
+                                await self._handle_msg_output_transcription(message)
+                            if (
+                                sc
+                                and sc.grounding_metadata
+                                and not sc.model_turn
+                                and not sc.output_transcription
+                            ):
+                                await self._handle_msg_grounding_metadata(message)
+                            if sc and sc.turn_complete:
+                                if not message.usage_metadata:
+                                    logger.warning("Received turn_complete without usage_metadata")
+                                await self._handle_msg_turn_complete(message)
+                                if message.usage_metadata:
+                                    await self._handle_msg_usage_metadata(message)
+                            if message.tool_call:
+                                await self._handle_msg_tool_call(message)
+                            if message.session_resumption_update:
+                                self._handle_msg_resumption_update(message)
+                            if message.go_away:
+                                self._handle_go_away(message.go_away)
+                    except Exception as e:
+                        if not self._disconnecting:
+                            should_reconnect = await self._handle_connection_error(e)
+                            if should_reconnect:
+                                await self._reconnect()
+                                return  # Exit this connection handler, _reconnect will start a new one
+                        break
+        except Exception as e:
+            if not self._disconnecting:
+                await self._handle_connect_failure(e)
+
+    async def _handle_connect_failure(self, error) -> None:
+        """The connect itself failed (see `_connection_task_handler`'s
+        docstring) — `self._session` was never set, so there is no live
+        session/task to tear down; call `_connect()` directly rather than
+        `_reconnect()` (which would try to disconnect a connection that
+        never came up).
+
+        If a session resumption handle was in play, drop it before retrying:
+        a handle Google just rejected is not going to succeed on the very
+        next attempt, and `_handle_session_ready` re-seeds cleanly from
+        `self._context` (stripped of tool-call noise, see
+        `_create_initial_response`) when there is no handle. Either way this
+        still goes through `_handle_connection_error` so
+        `MAX_CONSECUTIVE_FAILURES` keeps applying and ConnectionRecovery
+        still hears about it once pipecat's own retries are exhausted.
+        """
+        if self._session_resumption_handle:
+            logger.warning(
+                f"⚠️ Gemini resumed connect failed ({error!r}); dropping the stale "
+                "resumption handle and reconnecting fresh from cached context"
+            )
+            self._session_resumption_handle = None
+        should_reconnect = await self._handle_connection_error(error)
+        if should_reconnect:
+            await self._connect(session_resumption_handle=self._session_resumption_handle)
 
     def _handle_go_away(self, go_away) -> None:
         """Server warns it will close the connection soon (session max

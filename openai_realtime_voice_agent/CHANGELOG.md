@@ -43,6 +43,16 @@ All notable changes to this add-on. Newest first.
   and `LLM_PROVIDER`/`GEMINI_*` were read but never `export`ed, so `main.py`
   would never have seen them. Fixed: the key read is restored, the required
   check is provider-aware (mirrors `main.py`), and all five are exported.
+- Review fix (never shipped, found live on HA VM 140): a resumed connect
+  that Google closes outright (`1011 Internal error encountered`) used to
+  escape `_connection_task_handler` uncaught and leave the service
+  permanently dead — pipecat's inner `try/except` only covers the message
+  loop, not establishing the connection itself. Now caught, drops the stale
+  resumption handle, and retries. Separately, the reconnect seed replayed
+  tool call/result pairs as mis-ordered text turns ahead of the user
+  question that triggered them (a stale "current time" measurably confused
+  the model, and is the likely actual cause of the stall above) — the seed
+  now carries only user/assistant text.
 - See `docs/GEMINI-LIVE-PHASE1-REPORT.md` for what was verified offline vs.
   not, and the open questions (idle session lifetime, per-second vs.
   per-turn billing, the "stop" behaviour, the Gemini voice list).
