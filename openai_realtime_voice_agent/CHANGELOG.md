@@ -37,6 +37,12 @@ All notable changes to this add-on. Newest first.
   handing it OpenAI-shaped dicts it would not understand.
 - `gpt-realtime-*` and `gpt-live-1` behaviour unchanged (`llm_provider`
   defaults to `openai`, and `test_pipeline_smoke.py` is untouched).
+- Review fix (never shipped): `root/run.sh` had dropped the
+  `OPENAI_API_KEY=$(bashio::config ...)` read while keeping the required-key
+  check, which would have exited every install (both providers) at startup;
+  and `LLM_PROVIDER`/`GEMINI_*` were read but never `export`ed, so `main.py`
+  would never have seen them. Fixed: the key read is restored, the required
+  check is provider-aware (mirrors `main.py`), and all five are exported.
 - See `docs/GEMINI-LIVE-PHASE1-REPORT.md` for what was verified offline vs.
   not, and the open questions (idle session lifetime, per-second vs.
   per-turn billing, the "stop" behaviour, the Gemini voice list).

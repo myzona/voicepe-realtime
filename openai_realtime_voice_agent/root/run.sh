@@ -2,6 +2,7 @@
 set -e
 
 # --- 🔑 Basics ---
+OPENAI_API_KEY=$(bashio::config 'openai_api_key')
 SPEAKER_MALE_NAME=$(bashio::config 'speaker_male_name')
 WAKE_SOUND_ENTITY=$(bashio::config 'wake_sound_entity')
 TIMER_RING_ENTITY=$(bashio::config 'timer_ring_entity')
@@ -58,14 +59,29 @@ TRANSCRIPTION_MODEL=$(bashio::config 'transcription_model')
 # --- 🔍 Debug ---
 ENABLE_RECORDING=$(bashio::config 'enable_recording')
 
-# Validate required configuration
-if [ -z "$OPENAI_API_KEY" ]; then
-    bashio::log.error "OPENAI_API_KEY is required but not set"
-    exit 1
-fi
+# Validate required configuration. main.py re-checks this the same way
+# (required only for the selected provider); this just gives a clear log
+# line before Python even starts.
+case "${LLM_PROVIDER:-openai}" in
+  gemini)
+    if [ -z "$GEMINI_API_KEY" ]; then
+        bashio::log.error "gemini_api_key is required when llm_provider is gemini"
+        exit 1
+    fi ;;
+  *)
+    if [ -z "$OPENAI_API_KEY" ]; then
+        bashio::log.error "OPENAI_API_KEY is required but not set"
+        exit 1
+    fi ;;
+esac
 
 # Export environment variables
 export OPENAI_API_KEY
+export LLM_PROVIDER
+export GEMINI_API_KEY
+export GEMINI_MODEL
+export GEMINI_VOICE
+export GEMINI_THINKING_LEVEL
 export SPEAKER_MALE_NAME
 export WAKE_SOUND_ENTITY
 export TIMER_RING_ENTITY
