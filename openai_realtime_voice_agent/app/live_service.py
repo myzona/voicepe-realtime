@@ -91,6 +91,7 @@ from pipecat.services.openai.live import events as live_events
 from pipecat.services.openai.live.llm import OpenAILiveLLMService
 from pipecat.utils.time import time_now_iso8601
 
+from app.live_mode import LiveModeService
 from app.tool_guard import guarded_tool_handler
 
 logger = logging.getLogger(__name__)
@@ -292,8 +293,15 @@ def _fmt_delta(a: Optional[float], b: Optional[float]) -> str:
     return f"{b - a:.1f}s"
 
 
-class SafeLiveLLMService(OpenAILiveLLMService):
-    """OpenAILiveLLMService adapted to the Voice PE add-on (see module docstring)."""
+class SafeLiveLLMService(LiveModeService, OpenAILiveLLMService):
+    """OpenAILiveLLMService adapted to the Voice PE add-on (see module docstring).
+
+    Inherits `LiveModeService` (app/live_mode.py) purely as a marker so
+    `websocket_handler.build_pipeline` / `Application._preseed_context` can
+    detect "a live-style service is in the Realtime slot" without hardcoding
+    this class — Gemini Live (app/gemini_live_service.py) shares the same
+    marker. No behaviour changes from the mixin itself.
+    """
 
     def __init__(self, *, tools: Optional[list] = None, hosted_web_search: bool = False, **kwargs):
         super().__init__(**kwargs)
