@@ -17,7 +17,7 @@ Two places hold configuration:
 
 | Option | Default | Purpose / when to change |
 |---|---|---|
-| `openai_api_key` | *(empty)* | Your OpenAI key (`sk-...`), created at platform.openai.com with billing enabled. Everything — listening, thinking, speaking, web search — runs on this key. **Required.** |
+| `openai_api_key` | *(empty)* | Your OpenAI key (`sk-...`), created at platform.openai.com with billing enabled. **Required with `llm_provider: openai`.** With `llm_provider: gemini` it is only used for `web_search` (always an OpenAI call) — leave it blank and web search is disabled with a startup warning. |
 | `instructions` | English voice-tuned prompt | The system prompt: personality, language, house rules. Write it like you'd brief a person. See [Persona & voices](features.md#persona--voices) for what it can and can't change. |
 | `transcription_language` | *(empty)* | Two-letter ISO code (`en`, `nl`, `de`, …). Setting it pins the language and logs what you said as `🗣️ user:` lines — very handy for debugging. Empty = auto-detect, no user transcript. |
 
@@ -25,6 +25,7 @@ Two places hold configuration:
 
 | Option | Default | Purpose / when to change |
 |---|---|---|
+| `llm_provider` | `openai` | Which speech-to-speech backend runs the device. `openai` uses the options below; `gemini` uses Google's Gemini Live instead (`gemini_*` options further down) — not a delegation architecture like gpt-live-1, Gemini calls the tools itself. Existing installs default to `openai`, unaffected. |
 | `openai_model` | `gpt-realtime-2` | The speech-to-speech model. Choices: `gpt-realtime-2` (newest, smartest), `gpt-live-1` (OpenAI's full-duplex GPT-Live; tools run on `live_backend_model`), `gpt-realtime-1.5`, `gpt-realtime-mini` (cheaper, less capable), `gpt-realtime`, or `custom`. |
 | `openai_model_custom` | *(hidden)* | Any valid Realtime model id (or a `gpt-live-*` id), used when `openai_model` is `custom`. Expert escape hatch. |
 | `live_backend_model` | *(hidden, `gpt-5.4-mini`)* | GPT-Live only: the Responses model the live model delegates tool calls and reasoning to (`session.delegation.responses.model`). Any Responses-capable id (`gpt-5.4-nano` for a faster/cheaper backend). Turn-detection, speed, reply-length, noise-reduction and transcription options do not apply to GPT-Live. |
@@ -35,6 +36,10 @@ Two places hold configuration:
 | `openai_voice_custom` | *(hidden)* | Any valid OpenAI voice name, used when `openai_voice` is `custom`. |
 | `openai_speed` | `1.0` | Speaking pace, `0.25`–`1.5`. Changes pace only, not the words. |
 | `max_output_tokens` | `0` | Caps answer length in tokens (≈ 0.75 words each). `0` = no cap. Set ~`1024` if it rambles; too low cuts answers off mid-sentence. |
+| `gemini_api_key` | *(empty)* | Only used with `llm_provider: gemini`. Your Google AI Studio / Gemini API key (aistudio.google.com → Get API key). |
+| `gemini_model` | `gemini-3.8-live` | Only used with `llm_provider: gemini`. Google's full-duplex live model. A `-extended-thinking` variant (e.g. `gemini-3.8-live-extended-thinking`) reasons before answering (slower, speaks a filler) — `gemini_thinking_level` only applies to those variants; a plain model must not (and does not) receive it. |
+| `gemini_voice` | `Charon` | Only used with `llm_provider: gemini`. Any Gemini Live prebuilt voice name. |
+| `gemini_thinking_level` | `low` | Only used with a `-extended-thinking` Gemini model. `medium`/`high` think longer before answering or calling a tool. Ignored (not sent) for a plain Gemini model. |
 
 ## 💬 Conversation
 

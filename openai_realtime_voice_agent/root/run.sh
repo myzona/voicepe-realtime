@@ -16,10 +16,15 @@ INSTRUCTIONS=$(bashio::config 'instructions')
 TRANSCRIPTION_LANGUAGE=$(bashio::config 'transcription_language')
 
 # --- 🗣️ Model & voice ---
+LLM_PROVIDER=$(bashio::config 'llm_provider')
 OPENAI_MODEL=$(bashio::config 'openai_model')
 OPENAI_VOICE=$(bashio::config 'openai_voice')
 OPENAI_SPEED=$(bashio::config 'openai_speed')
 MAX_OUTPUT_TOKENS=$(bashio::config 'max_output_tokens')
+GEMINI_API_KEY=$(bashio::config 'gemini_api_key')
+GEMINI_MODEL=$(bashio::config 'gemini_model')
+GEMINI_VOICE=$(bashio::config 'gemini_voice')
+GEMINI_THINKING_LEVEL=$(bashio::config 'gemini_thinking_level')
 
 # --- 💬 Conversation ---
 FOLLOW_UP_LISTEN_SECONDS=$(bashio::config 'follow_up_listen_seconds')
@@ -54,14 +59,29 @@ TRANSCRIPTION_MODEL=$(bashio::config 'transcription_model')
 # --- 🔍 Debug ---
 ENABLE_RECORDING=$(bashio::config 'enable_recording')
 
-# Validate required configuration
-if [ -z "$OPENAI_API_KEY" ]; then
-    bashio::log.error "OPENAI_API_KEY is required but not set"
-    exit 1
-fi
+# Validate required configuration. main.py re-checks this the same way
+# (required only for the selected provider); this just gives a clear log
+# line before Python even starts.
+case "${LLM_PROVIDER:-openai}" in
+  gemini)
+    if [ -z "$GEMINI_API_KEY" ]; then
+        bashio::log.error "gemini_api_key is required when llm_provider is gemini"
+        exit 1
+    fi ;;
+  *)
+    if [ -z "$OPENAI_API_KEY" ]; then
+        bashio::log.error "OPENAI_API_KEY is required but not set"
+        exit 1
+    fi ;;
+esac
 
 # Export environment variables
 export OPENAI_API_KEY
+export LLM_PROVIDER
+export GEMINI_API_KEY
+export GEMINI_MODEL
+export GEMINI_VOICE
+export GEMINI_THINKING_LEVEL
 export SPEAKER_MALE_NAME
 export WAKE_SOUND_ENTITY
 export TIMER_RING_ENTITY

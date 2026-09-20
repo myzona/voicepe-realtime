@@ -9,8 +9,9 @@ configuration:
     description: >-
       Your personal OpenAI key (starts with sk-...). Create one at
       platform.openai.com → API keys, and make sure billing is set up.
-      Everything the assistant does — listening, thinking, speaking, web
-      search — runs on this key.
+      Required when Provider is "openai". With Provider "gemini" it is only
+      used for web search (Gemini has no built-in search of its own) — leave
+      it blank to disable web search on that path.
   instructions:
     name: "🔑 Basics · Assistant personality (system prompt)"
     description: >-
@@ -31,6 +32,14 @@ configuration:
       Leave empty for auto-detect (no user transcript in the log).
 
   # --- 🗣️ Model & voice ---
+  llm_provider:
+    name: "🗣️ Model & voice · Provider"
+    description: >-
+      Which speech-to-speech backend runs the device. "openai" (default) uses
+      the Model/Voice/Live options below. "gemini" uses Google's Gemini Live
+      instead (Gemini model/voice/thinking options further down); the
+      Live-1-only options and turn-detection/speed/noise-reduction settings do
+      not apply to it. Existing installs keep "openai" until you change this.
   openai_model:
     name: "🗣️ Model & voice · Model"
     description: >-
@@ -103,6 +112,31 @@ configuration:
       Caps how long an answer may get, in tokens (≈ 0.75 words each).
       0 = no cap. Set e.g. 1024 if it sometimes rambles on; too low cuts
       answers off mid-sentence.
+  gemini_api_key:
+    name: "🗣️ Model & voice · Gemini API key"
+    description: >-
+      Only used with Provider "gemini". Your Google AI Studio / Gemini API
+      key. Get one at aistudio.google.com → Get API key.
+  gemini_model:
+    name: "🗣️ Model & voice · Gemini model"
+    description: >-
+      Only used with Provider "gemini". gemini-3.8-live (default) is Google's
+      full-duplex live model. A "-extended-thinking" variant (e.g.
+      gemini-3.8-live-extended-thinking) makes it reason before answering, at
+      the cost of a "let me check" filler and several extra seconds per
+      reply — Gemini thinking level below then applies; plain gemini-3.8-live
+      does not accept that setting at all.
+  gemini_voice:
+    name: "🗣️ Model & voice · Gemini voice"
+    description: >-
+      Only used with Provider "gemini". Any Gemini Live prebuilt voice name
+      (default Charon). See Google's Gemini API voice list for alternatives.
+  gemini_thinking_level:
+    name: "🗣️ Model & voice · Gemini thinking level"
+    description: >-
+      Only used with an "-extended-thinking" Gemini model. low (default) is
+      quickest; medium/high think longer before answering or calling a tool.
+      Ignored (and not sent) for a plain, non-thinking Gemini model.
 
   # --- 💬 Conversation ---
   follow_up_listen_seconds:

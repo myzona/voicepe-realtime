@@ -2,6 +2,61 @@
 
 All notable changes to this add-on. Newest first.
 
+## 0.17.0-live.4 (fork)
+
+- **Gemini Live provider (`llm_provider: gemini`, phase 1).** A new
+  `llm_provider` option (`openai`/`gemini`, default `openai` — existing
+  installs unaffected) selects Google's Gemini Live API
+  (`app/gemini_live_service.py`, `SafeGeminiLiveLLMService` on pipecat's
+  `GeminiLiveLLMService`) instead of the OpenAI paths. Unlike GPT-Live-1,
+  Gemini is not a delegation architecture — it calls the registered tools
+  itself, so `instructions` reach it unmodified, same as `gpt-realtime-2`.
+  New options: `gemini_api_key`, `gemini_model` (default `gemini-3.8-live`),
+  `gemini_voice` (default `Charon`), `gemini_thinking_level` (default `low`,
+  only sent to a `-extended-thinking` model — a plain model rejects the
+  connection if sent one at all).
+- **Turn frames, input clock, output gate, ported from GPT-Live-1.** Gemini's
+  own service emits no `UserStartedSpeakingFrame`/`UserStoppedSpeakingFrame`
+  at all; they are derived here from the first input-transcription fragment
+  (open) and the model starting to respond (close), same reasoning as
+  GPT-Live-1's turn handling. The input clock (same constants, same log
+  lines as `SafeLiveLLMService`) feeds silence while the device mic is gated
+  so a tool result is spoken immediately instead of waiting for the mic to
+  re-open; the output gate drops inter-utterance silence so the device
+  reaches idle.
+- **Session resumption + `goAway`.** pipecat's Gemini Live service already
+  stores and reuses the session resumption handle on every reconnect it
+  triggers itself (unlike either OpenAI class, it also self-heals up to 3
+  consecutive connection failures on its own). `goAway` — the server's
+  advance warning before a forced close — has no handler anywhere in
+  pipecat; this adds one that reconnects proactively once the house is
+  quiet, reusing the handle.
+- **Tool conversion.** The add-on's OpenAI-native tool dicts are converted to
+  pipecat's `FunctionSchema`/`ToolsSchema` (`openai_tools_to_gemini`) so
+  Gemini's own adapter builds `functionDeclarations` correctly, instead of
+  handing it OpenAI-shaped dicts it would not understand.
+- `gpt-realtime-*` and `gpt-live-1` behaviour unchanged (`llm_provider`
+  defaults to `openai`, and `test_pipeline_smoke.py` is untouched).
+- Review fix (never shipped): `root/run.sh` had dropped the
+  `OPENAI_API_KEY=$(bashio::config ...)` read while keeping the required-key
+  check, which would have exited every install (both providers) at startup;
+  and `LLM_PROVIDER`/`GEMINI_*` were read but never `export`ed, so `main.py`
+  would never have seen them. Fixed: the key read is restored, the required
+  check is provider-aware (mirrors `main.py`), and all five are exported.
+- Review fix (never shipped, found live on HA VM 140): a resumed connect
+  that Google closes outright (`1011 Internal error encountered`) used to
+  escape `_connection_task_handler` uncaught and leave the service
+  permanently dead — pipecat's inner `try/except` only covers the message
+  loop, not establishing the connection itself. Now caught, drops the stale
+  resumption handle, and retries. Separately, the reconnect seed replayed
+  tool call/result pairs as mis-ordered text turns ahead of the user
+  question that triggered them (a stale "current time" measurably confused
+  the model, and is the likely actual cause of the stall above) — the seed
+  now carries only user/assistant text.
+- See `docs/GEMINI-LIVE-PHASE1-REPORT.md` for what was verified offline vs.
+  not, and the open questions (idle session lifetime, per-second vs.
+  per-turn billing, the "stop" behaviour, the Gemini voice list).
+
 ## 0.17.0-live.3 (fork)
 
 - **GPT-Live: no more stall after a tool call.** The live model only advances

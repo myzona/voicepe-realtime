@@ -1,5 +1,5 @@
 name: OpenAI Realtime 2 Voice Agent
-version: "0.17.0-live.3"
+version: "0.17.0-live.4"
 slug: openai_realtime_voice_agent
 description: Talk to your home with OpenAI gpt-realtime-2 — a voice agent for the Home Assistant Voice PE, with live device control and web search.
 url: https://github.com/TristanBrotherton/voicepe-realtime
@@ -68,10 +68,23 @@ options:
   # "Show unused optional configuration options" or set in YAML.)
   # gpt-live-1 selects the GPT-Live (full-duplex) API; tools then run on
   # live_backend_model (schema-only, hidden; default gpt-5.4-mini in main.py).
+  # llm_provider picks the speech-to-speech backend: openai (gpt-realtime-*/
+  # gpt-live-1, below) or gemini (Gemini Live, gemini_* below). Default
+  # openai — existing installs are unaffected.
+  llm_provider: "openai"
   openai_model: "gpt-realtime-2"
   openai_voice: "marin"
   openai_speed: 1.0
   max_output_tokens: 0
+  # Gemini Live (llm_provider: gemini only). openai_api_key is still used for
+  # web_search (OpenAI Responses) even on this path; leave it blank and
+  # web_search is disabled with a startup warning.
+  gemini_api_key: ""
+  gemini_model: "gemini-3.8-live"
+  gemini_voice: "Charon"
+  # Only sent when gemini_model contains "extended-thinking" — plain
+  # gemini-3.8-live rejects a thinkingConfig outright (probe, 2026-09-19).
+  gemini_thinking_level: "low"
 
   # --- 💬 Conversation ---
   follow_up_listen_seconds: 8
@@ -153,10 +166,15 @@ options:
 
 schema:
   # --- 🔑 Basics ---
-  openai_api_key: password
+  # Optional in the schema (llm_provider: gemini needs no OpenAI key to
+  # converse); main.py still requires it when llm_provider == openai, and
+  # web_search is disabled with a warning if it's blank under llm_provider:
+  # gemini.
+  openai_api_key: password?
   instructions: str
   transcription_language: str?
   # --- 🗣️ Model & voice ---
+  llm_provider: "list(openai|gemini)"
   openai_model: "list(gpt-realtime-2|gpt-live-1|gpt-realtime-1.5|gpt-realtime-mini|gpt-realtime|custom)"
   openai_model_custom: str?
   # GPT-Live-1 only: the Responses model the live model delegates tools and
@@ -173,6 +191,10 @@ schema:
   openai_voice_custom: str?
   openai_speed: float(0.25,1.5)
   max_output_tokens: int(0,4096)
+  gemini_api_key: password
+  gemini_model: str
+  gemini_voice: str
+  gemini_thinking_level: "list(low|medium|high)"
   # --- 💬 Conversation ---
   follow_up_listen_seconds: int(0,60)
   follow_up_open_delay_ms: int(0,5000)

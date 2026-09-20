@@ -51,6 +51,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
+from pipecat.services.openai.live.llm import OpenAILiveLLMService
 from pipecat.services.openai.live import events as live_events
 
 from app.device_registry import DeviceConnection
@@ -360,7 +361,12 @@ class TestLivePipelineSmoke(unittest.IsolatedAsyncioTestCase):
         # Input frames stamp the clock source.
         service._session_started = True
         before = service._last_input_audio_mono
-        with patch.object(SafeLiveLLMService.__mro__[1], "process_frame", AsyncMock()):
+        # Patch the real base class's process_frame directly rather than by
+        # __mro__ index — SafeLiveLLMService also inherits LiveModeService
+        # (app/live_mode.py, a marker mixin the Gemini Live service shares),
+        # which shifts the MRO index without changing which class this test
+        # means to patch.
+        with patch.object(OpenAILiveLLMService, "process_frame", AsyncMock()):
             await service.process_frame(
                 InputAudioRawFrame(audio=b"\x00\x00" * 480, sample_rate=24000, num_channels=1),
                 FrameDirection.DOWNSTREAM,

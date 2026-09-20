@@ -80,6 +80,7 @@ option has plain-language inline help.
 
 | Option | Default | Note |
 |---|---|---|
+| `llm_provider` | `openai` | speech-to-speech backend: `openai` (below) or `gemini` = Google's Gemini Live (see 4b) |
 | `openai_model` | `gpt-realtime-2` | newest speech-to-speech model; `gpt-live-1` = OpenAI's full-duplex GPT-Live (see 4a) |
 | `live_backend_model` | `gpt-5.4-mini` | GPT-Live only, hidden: the Responses model that runs tools/reasoning |
 | `live_backend_reasoning_effort` | `low` | GPT-Live only, hidden: backend `reasoning.effort` (`none`/`minimal` faster, `medium`/`high` slower, `default` = OpenAI's) |
@@ -152,6 +153,37 @@ Differences from gpt-realtime:
   input-clock silence counts as session audio (about 10 s per turn).
 - Sessions expire after about an hour; the add-on refreshes them in the
   background while the room is quiet, same as the 60-minute Realtime cap.
+
+### 4b. Gemini Live (`llm_provider: gemini`)
+
+Google's Gemini Live is also full-duplex, but unlike GPT-Live it is **not** a
+delegation architecture: Gemini calls the registered Home Assistant/timers/
+memory/web-search tools itself, the same way `gpt-realtime-2` does, so
+`instructions` reach it unmodified.
+
+| Option | Default | Note |
+|---|---|---|
+| `gemini_api_key` | *(empty)* | your Google AI Studio / Gemini API key (aistudio.google.com → Get API key) |
+| `gemini_model` | `gemini-3.8-live` | Google's full-duplex live model; a `-extended-thinking` variant (e.g. `gemini-3.8-live-extended-thinking`) reasons before answering — slower, and speaks a "let me check" filler — and is the only case `gemini_thinking_level` applies to |
+| `gemini_voice` | `Charon` | any Gemini Live prebuilt voice name |
+| `gemini_thinking_level` | `low` | only sent to a `-extended-thinking` model; `medium`/`high` think longer before answering or calling a tool |
+
+Notes:
+
+- **`openai_api_key`** is still used for `web_search` (it always calls
+  OpenAI's Responses API, regardless of the conversational provider). Leave
+  it blank on the Gemini path and web search is disabled with a startup log
+  warning — the assistant still works, it just can't look things up online.
+- **Not applicable** (ignored; the gpt-live-1-only options above do not
+  apply either): `vad_eagerness`, the `server_vad` fields, `openai_speed`,
+  `max_output_tokens`, `noise_reduction`, `transcription_model` /
+  `transcription_language`.
+- **Turn frames** are derived from Gemini's own transcription/response
+  events, the same idea as GPT-Live-1's turn handling, and an input clock
+  feeds silence while the device mic is gated for the same reason (a
+  full-duplex model's timeline only advances while it receives audio).
+- **Session lifetime / idle-drop behaviour has not been measured live** —
+  see `docs/GEMINI-LIVE-PHASE1-REPORT.md`'s open questions.
 
 ## 5. Web search
 
